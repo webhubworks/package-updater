@@ -1,0 +1,165 @@
+<?php
+
+namespace App\Actions;
+
+final class FindReposAction
+{
+    /**
+     * Returns matches under $reposDir whose composer.lock lists $package
+     * (in either packages or packages-dev), along with the locked version
+     * and whether $package is a direct dependency (declared in composer.json)
+     * or a transitive one.
+     *
+     * @return list<array{path: string, version: string, isDirect: bool}>
+     */
+    public static function find(string $reposDir, string $package): array
+    {
+        $matches = [];
+        $dirs = glob(rtrim($reposDir, '/') . '/*', GLOB_ONLYDIR) ?: [];
+
+        foreach ($dirs as $dir) {
+            $lock = $dir . '/composer.lock';
+            if (! is_file($lock)) {
+                continue;
+            }
+
+            $lockContent = @file_get_contents($lock);
+            if ($lockContent === false) {
+                continue;
+            }
+
+            $lockData = json_decode($lockContent, true);
+            if (! is_array($lockData)) {
+                continue;
+            }
+
+            $packages = array_merge(
+                $lockData['packages'] ?? [],
+                $lockData['packages-dev'] ?? [],
+            );
+
+            foreach ($packages as $pkg) {
+                if (($pkg['name'] ?? null) !== $package) {
+                    continue;
+                }
+
+                $matches[] = [
+                    'path' => $dir,
+                    'version' => (string) ($pkg['version'] ?? 'unknown'),
+                    'isDirect' => self::isDirectDep($dir, $package),
+                ];
+                break;
+            }
+        }
+
+        usort($matches, fn ($a, $b) => strcmp($a['path'], $b['path']));
+
+        return $matches;
+    }
+
+    public static function hasPackageInLock(string $repoPath, string $package): bool
+    {
+        $lock = $repoPath . '/composer.lock';
+        if (! is_file($lock)) {
+            return false;
+        }
+
+        $content = @file_get_contents($lock);
+        if ($content === false) {
+            return false;
+        }
+
+        $data = json_decode($content, true);
+        if (! is_array($data)) {
+            return false;
+        }
+
+        foreach (array_merge($data['packages'] ?? [], $data['packages-dev'] ?? []) as $pkg) {
+            if (($pkg['name'] ?? null) === $package) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static function isDirectDep(string $repoPath, string $package): bool
+    {
+        $composerJson = $repoPath . '/composer.json';
+        if (! is_file($composerJson)) {
+            return false;
+        }
+
+        $content = @file_get_contents($composerJson);
+        if ($content === false) {
+            return false;
+        }
+
+        $data = json_decode($content, true);
+        if (! is_array($data)) {
+            return false;
+        }
+
+        return isset($data['require'][$package]) || isset($data['require-dev'][$package]);
+    }
+
+    /**
+     * Across all matched repos, find packages that directly require $package
+     * (i.e. candidate "parent" packages composer would need to update with -W
+     * in order to bump a transitive $package).
+     *
+     * @param  list<array{path: string, version: string, isDirect: bool}>  $matches
+     * @return list<array{name: string, repoCount: int}>  sorted by frequency desc
+     */
+    public static function findParentCandidates(array $matches, string $package): array
+    {
+        $counts = [];
+
+        foreach ($matches as $match) {
+            $lock = $match['path'] . '/composer.lock';
+            if (! is_file($lock)) {
+                continue;
+            }
+
+            $content = @file_get_contents($lock);
+            if ($content === false) {
+                continue;
+            }
+
+            $data = json_decode($content, true);
+            if (! is_array($data)) {
+                continue;
+            }
+
+            $packages = array_merge(
+                $data['packages'] ?? [],
+                $data['packages-dev'] ?? [],
+            );
+
+            $repoParents = [];
+            foreach ($packages as $pkg) {
+                $name = $pkg['name'] ?? null;
+                if (! is_string($name) || $name === $package) {
+                    continue;
+                }
+
+                if (isset($pkg['require'][$package])) {
+                    $repoParents[$name] = true;
+                }
+            }
+
+            foreach (array_keys($repoParents) as $parent) {
+                $counts[$parent] = ($counts[$parent] ?? 0) + 1;
+            }
+        }
+
+        arsort($counts);
+
+        $result = [];
+        foreach ($counts as $name => $count) {
+            $result[] = ['name' => $name, 'repoCount' => $count];
+        }
+
+        return $result;
+    }
+}

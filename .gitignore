@@ -1,0 +1,6 @@
+/vendor
+/.idea
+/.vscode
+/.vagrant
+/logs
+.phpunit.result.cache
