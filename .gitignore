@@ -3,4 +3,5 @@
 /.vscode
 /.vagrant
 /logs
+.env
 .phpunit.result.cache

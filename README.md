@@ -14,7 +14,11 @@ git clone <repo-url> package-updater   # or copy the directory in
 cd package-updater
 composer install
 chmod +x package-updater
+cp .env.example .env                   # then edit REPOS_DIR if your repos live elsewhere
 ```
+
+The tool reads `REPOS_DIR` from `.env` to know where to scan. Defaults to
+`$HOME/reps`. Override per-run with `--reps-dir=/some/path`.
 
 ### Git credentials
 
@@ -137,7 +141,7 @@ Run for real, four repos in parallel, no confirmation prompt:
 
 | Option        | Description                                                  |
 |---------------|--------------------------------------------------------------|
-| `--reps-dir=` | Directory containing repos (default: `~/reps`)               |
+| `--reps-dir=` | Directory containing repos (default: `REPOS_DIR` from `.env`, falling back to `$HOME/reps`) |
 | `--parallel=` | Number of repos to process concurrently (`1` = sequential)   |
 | `--dry-run`   | List matching repos with version + dep type (direct/transitive) and exit |
 | `--limit=`    | Process at most N repos (after alphabetical sort). Also prompted interactively. |

@@ -46,8 +46,8 @@ class UpdateCommand extends Command
                 : 'Use vendor/package format',
         );
 
-        $reposDir = $this->option('reps-dir') ?: ($_SERVER['HOME'] . '/reps');
-        $reposDir = rtrim($reposDir, '/');
+        $reposDir = $this->option('reps-dir') ?: config('package-updater.repos_dir');
+        $reposDir = rtrim((string) $reposDir, '/');
 
         if (! is_dir($reposDir)) {
             $this->error("Repos directory not found: {$reposDir}");
