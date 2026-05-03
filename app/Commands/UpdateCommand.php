@@ -31,6 +31,7 @@ class UpdateCommand extends Command
         {--with-all-dependencies : Pass -W to composer (always set when --update-package is used)}
         {--update-package= : Run `composer update` on this package instead of the target. Useful for transitive targets where a parent constraint blocks reaching the desired version.}
         {--target-version= : Skip repos whose composer.lock already has this version of the package}
+        {--stop-ddev : Stop the ddev project in each repo after a successful update (default: keep running)}
         {--yes : Skip the confirmation prompt}';
 
     protected $description = 'Update a Composer package across all local repos that depend on it';
@@ -168,6 +169,8 @@ class UpdateCommand extends Command
             }
         }
 
+        $keepDdevRunning = $this->resolveKeepDdevRunning();
+
         $repos = array_map(fn ($m) => $m['path'], $matches);
         $mode = $parallel === 1 ? 'sequentially' : "with {$parallel} workers in parallel";
 
@@ -181,8 +184,8 @@ class UpdateCommand extends Command
         }
 
         $results = $parallel === 1
-            ? $this->runSequential($repos, $package, $withAllDependencies, $updatePackage)
-            : $this->runParallel($repos, $package, $parallel, $withAllDependencies, $updatePackage);
+            ? $this->runSequential($repos, $package, $withAllDependencies, $updatePackage, $keepDdevRunning)
+            : $this->runParallel($repos, $package, $parallel, $withAllDependencies, $updatePackage, $keepDdevRunning);
 
         $this->printSummary(array_merge($preSkipped, $results), $targetVersion);
 
@@ -317,6 +320,23 @@ class UpdateCommand extends Command
         return $normalize($a) === $normalize($b);
     }
 
+    private function resolveKeepDdevRunning(): bool
+    {
+        if ($this->option('stop-ddev')) {
+            return false;
+        }
+
+        if ($this->option('yes')) {
+            return true;
+        }
+
+        return confirm(
+            label: 'Keep the ddev project running in each repo after a successful update?',
+            default: true,
+            hint: 'Choose "no" to run `ddev stop` after each successful update.',
+        );
+    }
+
     private function resolveParallel(): int
     {
         $option = $this->option('parallel');
@@ -339,7 +359,7 @@ class UpdateCommand extends Command
      * @param  list<string>  $repos
      * @return list<RepoUpdateResult>
      */
-    private function runSequential(array $repos, string $package, bool $withAllDependencies, string $updatePackage): array
+    private function runSequential(array $repos, string $package, bool $withAllDependencies, string $updatePackage, bool $keepDdevRunning): array
     {
         $results = [];
         $total = count($repos);
@@ -355,6 +375,7 @@ class UpdateCommand extends Command
                 $this->streamingCallback(),
                 $withAllDependencies,
                 $updatePackage,
+                $keepDdevRunning,
             );
             $results[] = $result;
             $this->printRepoLine($result, $n, $total);
@@ -367,7 +388,7 @@ class UpdateCommand extends Command
      * @param  list<string>  $repos
      * @return list<RepoUpdateResult>
      */
-    private function runParallel(array $repos, string $package, int $workers, bool $withAllDependencies, string $updatePackage): array
+    private function runParallel(array $repos, string $package, int $workers, bool $withAllDependencies, string $updatePackage, bool $keepDdevRunning): array
     {
         $php = (new PhpExecutableFinder())->find() ?: PHP_BINARY;
         $binary = base_path('package-updater');
@@ -391,6 +412,9 @@ class UpdateCommand extends Command
                 }
                 if ($updatePackage !== $package) {
                     $cmd[] = '--update-package=' . $updatePackage;
+                }
+                if (! $keepDdevRunning) {
+                    $cmd[] = '--stop-ddev';
                 }
                 $process = new Process($cmd);
                 $process->setTimeout(3600);

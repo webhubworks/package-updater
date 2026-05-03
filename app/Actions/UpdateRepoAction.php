@@ -28,6 +28,7 @@ final class UpdateRepoAction
         ?callable $onProgress = null,
         bool $withAllDependencies = false,
         ?string $updatePackage = null,
+        bool $keepDdevRunning = true,
     ): RepoUpdateResult {
         $updatePackage = $updatePackage ?? $package;
 
@@ -62,10 +63,8 @@ final class UpdateRepoAction
         }
 
         $detectedStatus = self::ddevStatus($repoPath);
-        $alreadyRunning = $detectedStatus === 'running';
-        $startedByUs = false;
 
-        if ($alreadyRunning) {
+        if ($detectedStatus === 'running') {
             if ($onProgress !== null) {
                 $onProgress('step-start', null, 'ddev already running — skipping start');
             }
@@ -77,7 +76,6 @@ final class UpdateRepoAction
             if (! $start->isSuccessful()) {
                 return self::fail($repoPath, $branch, 'ddev start', $start);
             }
-            $startedByUs = true;
         }
 
         $previousVersion = self::lockedVersion($repoPath, $package);
@@ -98,10 +96,10 @@ final class UpdateRepoAction
             return self::fail($repoPath, $branch, 'ddev composer update', $update);
         }
 
-        if ($startedByUs) {
+        if (! $keepDdevRunning) {
             self::run(['ddev', 'stop'], $repoPath, 300, $onProgress, 'ddev stop');
         } elseif ($onProgress !== null) {
-            $onProgress('step-start', null, 'ddev was already running — leaving it running');
+            $onProgress('step-start', null, 'leaving ddev running');
         }
 
         $installedVersion = self::lockedVersion($repoPath, $package);

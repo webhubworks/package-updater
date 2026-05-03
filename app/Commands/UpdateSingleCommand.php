@@ -11,7 +11,8 @@ class UpdateSingleCommand extends Command
         {repoPath}
         {package}
         {--with-all-dependencies}
-        {--update-package=}';
+        {--update-package=}
+        {--stop-ddev}';
 
     protected $description = 'Internal: update a single repo and emit JSON result on stdout';
 
@@ -27,6 +28,7 @@ class UpdateSingleCommand extends Command
             null,
             (bool) $this->option('with-all-dependencies'),
             is_string($updatePackage) && $updatePackage !== '' ? $updatePackage : null,
+            ! $this->option('stop-ddev'),
         );
 
         $this->output->writeln(json_encode($result->toArray()));
