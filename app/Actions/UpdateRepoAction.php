@@ -173,24 +173,41 @@ final class UpdateRepoAction
     }
 
     /**
-     * Parses a Pest/PHPUnit-style "Tests: ..." summary line from output.
+     * Parses a Pest- or PHPUnit-style test summary from prep output.
+     *
+     * Handles:
+     *   Pest:           "Tests:    3 todos, 1 skipped, 374 passed (2161 assertions)"
+     *   Pest failures:  "Tests:    2 failed, 374 passed (2161 assertions)"
+     *   PHPUnit fail:   "Tests: 774, Assertions: 3434, Errors: 0, Failures: 1, Skipped: 6."
+     *   PHPUnit pass:   "OK (774 tests, 3434 assertions)"
      *
      * @return array{failed: int, summary: string}|null
      */
     public static function parseTestSummary(string $output): ?array
     {
         $stripped = preg_replace('/\x1b\[[0-9;]*[A-Za-z]/', '', $output) ?? $output;
+        $lines = preg_split("/\r\n|\r|\n/", $stripped);
 
-        foreach (preg_split("/\r\n|\r|\n/", $stripped) as $line) {
+        foreach ($lines as $line) {
             $line = trim($line);
-            if ($line === '' || ! preg_match('/^Tests:\s+(.+)$/', $line, $m)) {
-                continue;
+            if ($line !== '' && preg_match('/^Tests:\s+(.+)$/', $line, $m)) {
+                $summary = rtrim(trim($m[1]), '.');
+                $pestFailed = preg_match('/(\d+)\s+failed/i', $summary, $f) ? (int) $f[1] : 0;
+                $phpunitFailures = preg_match('/Failures?:\s*(\d+)/i', $summary, $f2) ? (int) $f2[1] : 0;
+                $phpunitErrors = preg_match('/Errors?:\s*(\d+)/i', $summary, $e) ? (int) $e[1] : 0;
+
+                return [
+                    'failed' => $pestFailed + $phpunitFailures + $phpunitErrors,
+                    'summary' => $summary,
+                ];
             }
+        }
 
-            $summary = trim($m[1]);
-            $failed = preg_match('/(\d+)\s+failed/i', $summary, $f) ? (int) $f[1] : 0;
-
-            return ['failed' => $failed, 'summary' => $summary];
+        foreach ($lines as $line) {
+            $line = trim($line);
+            if ($line !== '' && preg_match('/^OK\s+\(.*?\)$/i', $line)) {
+                return ['failed' => 0, 'summary' => $line];
+            }
         }
 
         return null;
