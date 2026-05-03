@@ -5,7 +5,10 @@ namespace App\Commands;
 use App\Actions\FindReposAction;
 use App\Actions\UpdateRepoAction;
 use App\DataTransferObjects\RepoUpdateResult;
+use Illuminate\Console\OutputStyle;
 use LaravelZero\Framework\Commands\Command;
+use Symfony\Component\Console\Output\ConsoleOutputInterface;
+use Symfony\Component\Console\Output\ConsoleSectionOutput;
 use Symfony\Component\Process\PhpExecutableFinder;
 use Symfony\Component\Process\Process;
 
@@ -368,13 +371,16 @@ class UpdateCommand extends Command
     {
         $php = (new PhpExecutableFinder())->find() ?: PHP_BINARY;
         $binary = base_path('package-updater');
+        $consoleOutput = $this->getConsoleOutput();
+        $spinnerFrames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+        $tick = 0;
 
         $queue = $repos;
-        /** @var list<array{process: Process, repo: string}> $running */
+        /** @var list<array{process: Process, repo: string, index: int, section: ?ConsoleSectionOutput, started: float}> $running */
         $running = [];
         $results = [];
         $total = count($repos);
-        $done = 0;
+        $started = 0;
 
         while (! empty($queue) || ! empty($running)) {
             while (count($running) < $workers && ! empty($queue)) {
@@ -389,10 +395,37 @@ class UpdateCommand extends Command
                 $process = new Process($cmd);
                 $process->setTimeout(3600);
                 $process->start();
-                $running[] = ['process' => $process, 'repo' => $repo];
+                $started++;
+
+                $section = $consoleOutput?->section();
+                $entry = [
+                    'process' => $process,
+                    'repo' => $repo,
+                    'index' => $started,
+                    'section' => $section,
+                    'started' => microtime(true),
+                ];
+                $running[] = $entry;
+
+                $line = $this->formatRunningLine($entry, $spinnerFrames[0], $total);
+                if ($section !== null) {
+                    $section->writeln($line);
+                } else {
+                    $this->line($line);
+                }
             }
 
             usleep(200_000);
+            $tick++;
+
+            if ($consoleOutput !== null) {
+                $frame = $spinnerFrames[$tick % count($spinnerFrames)];
+                foreach ($running as $entry) {
+                    if ($entry['process']->isRunning() && $entry['section'] !== null) {
+                        $entry['section']->overwrite($this->formatRunningLine($entry, $frame, $total));
+                    }
+                }
+            }
 
             foreach ($running as $key => $entry) {
                 if ($entry['process']->isRunning()) {
@@ -402,14 +435,47 @@ class UpdateCommand extends Command
                 $result = $this->parseChildOutput($entry['process']->getOutput(), $entry['repo']);
                 $results[] = $result;
                 unset($running[$key]);
-                $done++;
-                $this->printRepoLine($result, $done, $total);
+
+                $finalLine = $this->formatRepoLine($result, $entry['index'], $total, microtime(true) - $entry['started']);
+                if ($entry['section'] !== null) {
+                    $entry['section']->overwrite($finalLine);
+                } else {
+                    $this->line($finalLine);
+                }
             }
 
             $running = array_values($running);
         }
 
         return $results;
+    }
+
+    /** @param array{repo: string, index: int, started: float} $entry */
+    private function formatRunningLine(array $entry, string $spinnerFrame, int $total): string
+    {
+        $elapsed = (int) round(microtime(true) - $entry['started']);
+        $name = basename($entry['repo']);
+
+        return sprintf(
+            '  <fg=cyan>%s</> [%d/%d] %s — running (%ds)',
+            $spinnerFrame,
+            $entry['index'],
+            $total,
+            $name,
+            $elapsed,
+        );
+    }
+
+    private function getConsoleOutput(): ?ConsoleOutputInterface
+    {
+        $output = $this->output;
+        if (! $output instanceof OutputStyle) {
+            return null;
+        }
+
+        $inner = $output->getOutput();
+
+        return $inner instanceof ConsoleOutputInterface ? $inner : null;
     }
 
     private function ensureDdevSshAuth(): void
@@ -473,22 +539,29 @@ class UpdateCommand extends Command
 
     private function printRepoLine(RepoUpdateResult $result, int $done, int $total): void
     {
+        $this->line($this->formatRepoLine($result, $done, $total));
+    }
+
+    private function formatRepoLine(RepoUpdateResult $result, int $index, int $total, ?float $elapsedSeconds = null): string
+    {
         $name = basename($result->repoPath);
         [$icon, $color] = match ($result->status) {
-            'success' => ['✓', 'info'],
-            'skipped' => ['↷', 'comment'],
-            'failed' => ['✗', 'error'],
+            'success' => ['✓', 'green'],
+            'skipped' => ['↷', 'yellow'],
+            'failed' => ['✗', 'red'],
         };
+        $elapsed = $elapsedSeconds !== null ? sprintf(' <fg=gray>(%ds)</>', (int) round($elapsedSeconds)) : '';
 
-        $this->line(sprintf(
-            "  <fg=%s>[%d/%d] %s %s</> — %s",
-            $color === 'info' ? 'green' : ($color === 'error' ? 'red' : 'yellow'),
-            $done,
+        return sprintf(
+            '  <fg=%s>[%d/%d] %s %s</>%s — %s',
+            $color,
+            $index,
             $total,
             $icon,
             $name,
+            $elapsed,
             $result->message,
-        ));
+        );
     }
 
     /** @param  list<RepoUpdateResult>  $results */
