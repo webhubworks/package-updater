@@ -13,6 +13,10 @@ final readonly class RepoUpdateResult
         public ?string $logPath = null,
         public ?string $previousVersion = null,
         public ?string $installedVersion = null,
+        public bool $prepRan = false,
+        public ?int $testsFailed = null,
+        public ?string $testsSummary = null,
+        public ?string $prepLogPath = null,
     ) {}
 
     public static function success(
@@ -21,6 +25,10 @@ final readonly class RepoUpdateResult
         bool $hasUncommittedLock,
         ?string $previousVersion = null,
         ?string $installedVersion = null,
+        bool $prepRan = false,
+        ?int $testsFailed = null,
+        ?string $testsSummary = null,
+        ?string $prepLogPath = null,
     ): self {
         return new self(
             repoPath: $path,
@@ -30,6 +38,10 @@ final readonly class RepoUpdateResult
             hasUncommittedLock: $hasUncommittedLock,
             previousVersion: $previousVersion,
             installedVersion: $installedVersion,
+            prepRan: $prepRan,
+            testsFailed: $testsFailed,
+            testsSummary: $testsSummary,
+            prepLogPath: $prepLogPath,
         );
     }
 
@@ -61,6 +73,10 @@ final readonly class RepoUpdateResult
             'logPath' => $this->logPath,
             'previousVersion' => $this->previousVersion,
             'installedVersion' => $this->installedVersion,
+            'prepRan' => $this->prepRan,
+            'testsFailed' => $this->testsFailed,
+            'testsSummary' => $this->testsSummary,
+            'prepLogPath' => $this->prepLogPath,
         ];
     }
 
@@ -76,6 +92,10 @@ final readonly class RepoUpdateResult
             logPath: $data['logPath'] ?? null,
             previousVersion: $data['previousVersion'] ?? null,
             installedVersion: $data['installedVersion'] ?? null,
+            prepRan: $data['prepRan'] ?? false,
+            testsFailed: $data['testsFailed'] ?? null,
+            testsSummary: $data['testsSummary'] ?? null,
+            prepLogPath: $data['prepLogPath'] ?? null,
         );
     }
 }

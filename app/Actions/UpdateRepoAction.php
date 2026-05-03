@@ -96,6 +96,39 @@ final class UpdateRepoAction
             return self::fail($repoPath, $branch, 'ddev composer update', $update);
         }
 
+        $prepRan = false;
+        $testsFailed = null;
+        $testsSummary = null;
+        $prepLogPath = null;
+
+        if (self::hasComposerScript($repoPath, 'prep')) {
+            $prepRan = true;
+            $prep = self::run(
+                ['ddev', 'composer', 'prep'],
+                $repoPath,
+                3600,
+                $onProgress,
+                'ddev composer prep',
+            );
+
+            $combinedOutput = $prep->getOutput() . "\n" . $prep->getErrorOutput();
+            $stats = self::parseTestSummary($combinedOutput);
+            if ($stats !== null) {
+                $testsFailed = $stats['failed'];
+                $testsSummary = $stats['summary'];
+            }
+
+            $hasFailures = ($testsFailed !== null && $testsFailed > 0) || ! $prep->isSuccessful();
+            if ($hasFailures) {
+                $prepLogPath = self::writeLog($repoPath, 'composer-prep', $prep);
+                if ($testsSummary === null) {
+                    $testsSummary = $prep->isSuccessful()
+                        ? 'prep ran but no test summary detected'
+                        : 'prep exited non-zero (no test summary detected)';
+                }
+            }
+        }
+
         if (! $keepDdevRunning) {
             self::run(['ddev', 'stop'], $repoPath, 300, $onProgress, 'ddev stop');
         } elseif ($onProgress !== null) {
@@ -112,7 +145,55 @@ final class UpdateRepoAction
             $hasLockChange,
             $previousVersion,
             $installedVersion,
+            $prepRan,
+            $testsFailed,
+            $testsSummary,
+            $prepLogPath,
         );
+    }
+
+    private static function hasComposerScript(string $repoPath, string $scriptName): bool
+    {
+        $composerJson = $repoPath . '/composer.json';
+        if (! is_file($composerJson)) {
+            return false;
+        }
+
+        $content = @file_get_contents($composerJson);
+        if ($content === false) {
+            return false;
+        }
+
+        $data = json_decode($content, true);
+        if (! is_array($data)) {
+            return false;
+        }
+
+        return isset($data['scripts'][$scriptName]);
+    }
+
+    /**
+     * Parses a Pest/PHPUnit-style "Tests: ..." summary line from output.
+     *
+     * @return array{failed: int, summary: string}|null
+     */
+    public static function parseTestSummary(string $output): ?array
+    {
+        $stripped = preg_replace('/\x1b\[[0-9;]*[A-Za-z]/', '', $output) ?? $output;
+
+        foreach (preg_split("/\r\n|\r|\n/", $stripped) as $line) {
+            $line = trim($line);
+            if ($line === '' || ! preg_match('/^Tests:\s+(.+)$/', $line, $m)) {
+                continue;
+            }
+
+            $summary = trim($m[1]);
+            $failed = preg_match('/(\d+)\s+failed/i', $summary, $f) ? (int) $f[1] : 0;
+
+            return ['failed' => $failed, 'summary' => $summary];
+        }
+
+        return null;
     }
 
     private static function lockedVersion(string $repoPath, string $package): ?string

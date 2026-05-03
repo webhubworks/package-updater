@@ -615,12 +615,12 @@ class UpdateCommand extends Command
         if (! empty($success)) {
             note('Successful updates' . ($targetVersion !== null ? " (target: {$targetVersion})" : '') . ':');
             table(
-                ['Repo', 'Branch', 'From', 'To', 'Note'],
+                ['Repo', 'Branch', 'From', 'To', 'Tests', 'Note'],
                 array_map(function (RepoUpdateResult $r) use ($targetVersion) {
                     $from = $r->previousVersion ?? '?';
                     $to = $r->installedVersion ?? '?';
                     $note = self::successNote($r, $targetVersion);
-                    return [basename($r->repoPath), $r->branch ?? '-', $from, $to, $note];
+                    return [basename($r->repoPath), $r->branch ?? '-', $from, $to, self::testsCell($r), $note];
                 }, $success),
             );
         }
@@ -631,6 +631,25 @@ class UpdateCommand extends Command
                 $belowTargetCount,
                 $targetVersion,
             ));
+        }
+
+        $testFailures = array_values(array_filter(
+            $success,
+            fn (RepoUpdateResult $r) => $r->prepRan && (($r->testsFailed ?? 0) > 0 || $r->testsSummary === null && $r->prepLogPath !== null),
+        ));
+        if (! empty($testFailures)) {
+            warning(sprintf(
+                '%d repo(s) had failing tests after `composer prep`:',
+                count($testFailures),
+            ));
+            foreach ($testFailures as $r) {
+                $name = basename($r->repoPath);
+                $summary = $r->testsSummary ?? 'no test summary';
+                $this->line("  <fg=red;options=bold>✗ {$name}</> — {$summary}");
+                if ($r->prepLogPath !== null) {
+                    $this->line("    <fg=gray>log:</> {$r->prepLogPath}");
+                }
+            }
         }
 
         if (! empty($skipped)) {
@@ -647,6 +666,23 @@ class UpdateCommand extends Command
                 $this->printFailureBlock($r);
             }
         }
+    }
+
+    private static function testsCell(RepoUpdateResult $r): string
+    {
+        if (! $r->prepRan) {
+            return '-';
+        }
+
+        if ($r->testsFailed === null) {
+            return '<fg=yellow>?</>';
+        }
+
+        if ($r->testsFailed > 0) {
+            return "<fg=red;options=bold>✗ {$r->testsFailed} failed</>";
+        }
+
+        return '<fg=green>✓ pass</>';
     }
 
     private static function successNote(RepoUpdateResult $r, ?string $targetVersion): string
