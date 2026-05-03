@@ -15,13 +15,10 @@ final class FindReposAction
     public static function find(string $reposDir, string $package): array
     {
         $matches = [];
-        $dirs = glob(rtrim($reposDir, '/') . '/*', GLOB_ONLYDIR) ?: [];
+        $dirs = self::collectRepoDirs(rtrim($reposDir, '/'));
 
         foreach ($dirs as $dir) {
             $lock = $dir . '/composer.lock';
-            if (! is_file($lock)) {
-                continue;
-            }
 
             $lockContent = @file_get_contents($lock);
             if ($lockContent === false) {
@@ -81,6 +78,45 @@ final class FindReposAction
         }
 
         return false;
+    }
+
+    /**
+     * Walk $reposDir and return paths that look like repo roots (contain a
+     * composer.lock). Descends into subdirectories that aren't repos
+     * themselves, so grouping folders like `~/reps/my7steps/<repo>` work.
+     *
+     * @return list<string>
+     */
+    private static function collectRepoDirs(string $reposDir, int $maxDepth = 4): array
+    {
+        $skip = ['vendor', 'node_modules', '.git', '.idea', '.vscode'];
+        $repos = [];
+
+        $walk = function (string $dir, int $depth) use (&$walk, &$repos, $skip, $maxDepth): void {
+            if (is_file($dir . '/composer.lock')) {
+                $repos[] = $dir;
+
+                return;
+            }
+
+            if ($depth >= $maxDepth) {
+                return;
+            }
+
+            $children = glob($dir . '/*', GLOB_ONLYDIR) ?: [];
+            foreach ($children as $child) {
+                $name = basename($child);
+                if ($name === '' || $name[0] === '.' || in_array($name, $skip, true)) {
+                    continue;
+                }
+
+                $walk($child, $depth + 1);
+            }
+        };
+
+        $walk($reposDir, 0);
+
+        return $repos;
     }
 
     private static function isDirectDep(string $repoPath, string $package): bool
