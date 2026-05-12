@@ -15,6 +15,7 @@ use Symfony\Component\Process\Process;
 
 use function Laravel\Prompts\confirm;
 use function Laravel\Prompts\info;
+use function Laravel\Prompts\multiselect;
 use function Laravel\Prompts\note;
 use function Laravel\Prompts\table;
 use function Laravel\Prompts\text;
@@ -27,7 +28,7 @@ class UpdateCommand extends Command
         {--reps-dir= : Directory containing repos (default: ~/reps)}
         {--parallel= : Number of repos to update concurrently (default: prompt; 1 = sequential)}
         {--dry-run : List matching repos with their currently locked version and exit}
-        {--limit= : Process at most N repos (after sorting alphabetically)}
+        {--repo=* : Process only the specified repo path(s); can be passed multiple times. Skips the interactive repo selection.}
         {--no-ssh-auth : Skip the initial `ddev auth ssh` step}
         {--with-all-dependencies : Pass -W to composer (always set when --update-package is used)}
         {--update-package= : Run `composer update` on this package instead of the target. Useful for transitive targets where a parent constraint blocks reaching the desired version.}
@@ -72,20 +73,14 @@ class UpdateCommand extends Command
             $totalFound === 1 ? 'y' : 'ies',
         ));
 
-        $cliLimitRaw = $this->option('limit');
-        $cliLimit = ($cliLimitRaw !== null && $cliLimitRaw !== '') ? max(1, (int) $cliLimitRaw) : null;
-
         if ($this->option('dry-run')) {
-            $preview = $cliLimit !== null && $cliLimit < count($matches)
-                ? array_slice($matches, 0, $cliLimit)
-                : $matches;
             table(
                 ['Repo', "Locked {$package} version", 'Dep type'],
                 array_map(fn ($m) => [
                     basename($m['path']),
                     $m['version'],
                     $m['isDirect'] ? 'direct' : 'transitive',
-                ], $preview),
+                ], $matches),
             );
             note('Dry run — no changes were made. Note: versions reflect each repo\'s current local composer.lock and may be stale.');
             return self::SUCCESS;
@@ -135,23 +130,14 @@ class UpdateCommand extends Command
         }
 
         $withAllDependencies = $this->resolveWithAllDependencies($updatePackage, $package);
-        $parallel = $this->resolveParallel();
 
-        $promptedLimit = null;
-        if ($cliLimit !== null) {
-            if ($cliLimit < count($matches)) {
-                $matches = array_slice($matches, 0, $cliLimit);
-                info("Limiting to first {$cliLimit} repositor" . ($cliLimit === 1 ? 'y' : 'ies') . '.');
-            }
-        } else {
-            $promptedLimit = $this->promptLimit(count($matches));
-            if ($promptedLimit !== null && $promptedLimit < count($matches)) {
-                $matches = array_slice($matches, 0, $promptedLimit);
-                info("Limiting to first {$promptedLimit} repositor" . ($promptedLimit === 1 ? 'y' : 'ies') . '.');
-            }
+        $matches = $this->resolveRepoSelection($matches);
+        if (empty($matches)) {
+            info('No repos selected — exiting.');
+            return self::SUCCESS;
         }
-        $effectiveLimit = $cliLimit ?? $promptedLimit;
 
+        $parallel = $this->resolveParallel();
         $keepDdevRunning = $this->resolveKeepDdevRunning();
 
         $repos = array_map(fn ($m) => $m['path'], $matches);
@@ -168,7 +154,7 @@ class UpdateCommand extends Command
             'target-version' => $rawTarget,
             'update-package' => $updatePackage !== $package ? $updatePackage : null,
             'with-all-dependencies' => $withAllDependencies,
-            'limit' => $effectiveLimit !== null ? (string) $effectiveLimit : null,
+            'repo' => array_map(fn ($m) => $m['path'], $matches),
             'stop-ddev' => ! $keepDdevRunning,
             'no-ssh-auth' => (bool) $this->option('no-ssh-auth'),
             'yes' => true,
@@ -231,29 +217,47 @@ class UpdateCommand extends Command
         );
     }
 
-    protected function promptLimit(int $available): ?int
+    /**
+     * Filter $matches down to the repos the user wants to process. Precedence:
+     *   1. --repo=...  (any number; skips the prompt)
+     *   2. --yes        (selects all $matches non-interactively)
+     *   3. multiselect  (default: nothing selected; Ctrl+A toggles all)
+     *
+     * @param  list<array{path: string, version: string, ...}>  $matches
+     * @return list<array<string, mixed>>
+     */
+    protected function resolveRepoSelection(array $matches): array
     {
-        if ($this->option('yes')) {
-            return null;
+        $cliRepos = array_values(array_filter(
+            array_map('strval', (array) $this->option('repo')),
+            fn ($p) => $p !== '',
+        ));
+
+        if (! empty($cliRepos)) {
+            $set = array_flip($cliRepos);
+            return array_values(array_filter($matches, fn ($m) => isset($set[$m['path']])));
         }
 
-        $value = text(
-            label: "Limit how many repos to process? (1-{$available}, blank = all)",
-            default: '',
-            validate: function (string $v) use ($available) {
-                if ($v === '') {
-                    return null;
-                }
-                if (! ctype_digit($v)) {
-                    return 'Enter a positive integer or leave blank';
-                }
-                $n = (int) $v;
-                return $n >= 1 && $n <= $available ? null : "Enter a value between 1 and {$available}";
-            },
+        if ($this->option('yes')) {
+            return $matches;
+        }
+
+        $options = [];
+        foreach ($matches as $m) {
+            $options[$m['path']] = basename($m['path']) . ' (' . $m['version'] . ')';
+        }
+
+        $selected = multiselect(
+            label: 'Which repos should be updated?',
+            options: $options,
+            default: [],
+            hint: 'Space to toggle · Ctrl+A to select/deselect all · Enter to confirm',
+            required: false,
         );
 
-        $value = trim($value);
-        return $value === '' ? null : (int) $value;
+        $set = array_flip(array_map('strval', (array) $selected));
+
+        return array_values(array_filter($matches, fn ($m) => isset($set[$m['path']])));
     }
 
     protected function resolveTargetVersion(): ?string

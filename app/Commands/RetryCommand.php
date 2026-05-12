@@ -21,9 +21,20 @@ class RetryCommand extends Command
             return self::FAILURE;
         }
 
+        try {
+            $target = $this->getApplication()->find($data['command']);
+        } catch (\Throwable $e) {
+            $this->error("Stored command `{$data['command']}` is not registered: " . $e->getMessage());
+            return self::FAILURE;
+        }
+        $allowedOptions = array_keys($target->getDefinition()->getOptions());
+
         $params = $data['arguments'];
         foreach ($data['options'] as $name => $value) {
             if ($value === null || $value === false) {
+                continue;
+            }
+            if (! in_array($name, $allowedOptions, true)) {
                 continue;
             }
             $params['--' . $name] = $value;

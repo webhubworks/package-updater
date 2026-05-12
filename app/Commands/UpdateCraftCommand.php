@@ -19,7 +19,7 @@ class UpdateCraftCommand extends UpdateCommand
         {--reps-dir= : Directory containing repos (default: ~/reps)}
         {--parallel= : Number of repos to update concurrently (default: prompt; 1 = sequential)}
         {--dry-run : List matching repos with their currently locked version and exit}
-        {--limit= : Process at most N repos (after sorting alphabetically)}
+        {--repo=* : Process only the specified repo path(s); can be passed multiple times. Skips the interactive repo selection.}
         {--no-ssh-auth : Skip the initial `ddev auth ssh` step}
         {--target-version= : Skip repos already at this version of the matched package}
         {--stop-ddev : Stop the ddev project in each repo after a successful update (default: keep running)}
@@ -61,16 +61,10 @@ class UpdateCraftCommand extends UpdateCommand
         $totalFound = count($matches);
         info(sprintf('Found %d repositor%s.', $totalFound, $totalFound === 1 ? 'y' : 'ies'));
 
-        $cliLimitRaw = $this->option('limit');
-        $cliLimit = ($cliLimitRaw !== null && $cliLimitRaw !== '') ? max(1, (int) $cliLimitRaw) : null;
-
         if ($this->option('dry-run')) {
-            $preview = $cliLimit !== null && $cliLimit < count($matches)
-                ? array_slice($matches, 0, $cliLimit)
-                : $matches;
             table(
                 ['Repo', 'Package', 'Locked version'],
-                array_map(fn ($m) => [basename($m['path']), $m['package'], $m['version']], $preview),
+                array_map(fn ($m) => [basename($m['path']), $m['package'], $m['version']], $matches),
             );
             note('Dry run — no changes were made. Note: versions reflect each repo\'s current local composer.lock and may be stale.');
             return self::SUCCESS;
@@ -84,23 +78,13 @@ class UpdateCraftCommand extends UpdateCommand
             return self::SUCCESS;
         }
 
-        $parallel = $this->resolveParallel();
-
-        $promptedLimit = null;
-        if ($cliLimit !== null) {
-            if ($cliLimit < count($matches)) {
-                $matches = array_slice($matches, 0, $cliLimit);
-                info("Limiting to first {$cliLimit} repositor" . ($cliLimit === 1 ? 'y' : 'ies') . '.');
-            }
-        } else {
-            $promptedLimit = $this->promptLimit(count($matches));
-            if ($promptedLimit !== null && $promptedLimit < count($matches)) {
-                $matches = array_slice($matches, 0, $promptedLimit);
-                info("Limiting to first {$promptedLimit} repositor" . ($promptedLimit === 1 ? 'y' : 'ies') . '.');
-            }
+        $matches = $this->resolveRepoSelection($matches);
+        if (empty($matches)) {
+            info('No repos selected — exiting.');
+            return self::SUCCESS;
         }
-        $effectiveLimit = $cliLimit ?? $promptedLimit;
 
+        $parallel = $this->resolveParallel();
         $keepDdevRunning = $this->resolveKeepDdevRunning();
 
         $mode = $parallel === 1 ? 'sequentially' : "with {$parallel} workers in parallel";
@@ -128,7 +112,7 @@ class UpdateCraftCommand extends UpdateCommand
             'reps-dir' => $reposDir,
             'parallel' => (string) $parallel,
             'target-version' => $rawTarget,
-            'limit' => $effectiveLimit !== null ? (string) $effectiveLimit : null,
+            'repo' => array_map(fn ($m) => $m['path'], $matches),
             'stop-ddev' => ! $keepDdevRunning,
             'no-ssh-auth' => (bool) $this->option('no-ssh-auth'),
             'craft-command' => $craftCommandLine,
