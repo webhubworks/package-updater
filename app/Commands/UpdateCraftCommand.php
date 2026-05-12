@@ -24,13 +24,13 @@ class UpdateCraftCommand extends UpdateCommand
         {--no-ssh-auth : Skip the initial `ddev auth ssh` step}
         {--target-version= : Skip repos already at this version of the matched package}
         {--stop-ddev : Stop the ddev project in each repo after a successful update (default: keep running)}
-        {--craft-command= : Full shell command to run in each repo (skips the editable-command prompt). Defaults to `ddev craft update <handle> --interactive=0 --with-expired --minor-only --backup=1`.}
+        {--craft-command= : Full shell command to run in each repo (skips the editable-command prompt). Defaults to `ddev php craft update <handle> --interactive=0 --with-expired --minor-only --backup=1`.}
         {--crawl-repo=* : After composer prep, run the site-crawler only in these repo path(s). Skips the interactive crawler-selection prompt.}
         {--no-crawl : Skip the site-crawler step entirely.}
         {--crawler-command= : Full shell command to run as the crawler (skips the editable-command prompt). Defaults to `site-crawler crawl:ddev --exclude="assets,variant,index.php,downloads,actions,.pdf"`.}
         {--yes : Skip the confirmation prompt}';
 
-    protected $description = 'Run `ddev craft update <handle>` across local repos containing the given Craft plugin (or Craft itself)';
+    protected $description = 'Run `ddev php craft update <handle>` across local repos containing the given Craft plugin (or Craft itself)';
 
     public function handle(): int
     {
@@ -94,7 +94,7 @@ class UpdateCraftCommand extends UpdateCommand
         $crawlSet = array_flip($crawlPaths);
 
         $mode = $parallel === 1 ? 'sequentially' : "with {$parallel} workers in parallel";
-        $defaultCommand = "ddev craft update {$handle} --interactive=0 --with-expired --minor-only --backup=1";
+        $defaultCommand = "ddev php craft update {$handle} --interactive=0 --with-expired --minor-only --backup=1";
 
         $craftOption = $this->option('craft-command');
         if (is_string($craftOption) && $craftOption !== '') {
