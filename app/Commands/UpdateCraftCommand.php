@@ -6,7 +6,6 @@ use App\Actions\FindCraftReposAction;
 use App\Actions\UpdateRepoAction;
 use App\DataTransferObjects\RepoUpdateResult;
 
-use function Laravel\Prompts\confirm;
 use function Laravel\Prompts\info;
 use function Laravel\Prompts\note;
 use function Laravel\Prompts\table;
@@ -122,8 +121,21 @@ class UpdateCraftCommand extends UpdateCommand
         $keepDdevRunning = $this->resolveKeepDdevRunning();
 
         $mode = $parallel === 1 ? 'sequentially' : "with {$parallel} workers in parallel";
-        if (! $this->option('yes') && ! confirm("Run `ddev craft update {$handle}` in " . count($matches) . " repos {$mode}?", default: true)) {
-            return self::SUCCESS;
+        $defaultCommand = "ddev craft update {$handle} --interactive=0 --with-expired --minor-only --backup=1";
+
+        if ($this->option('yes')) {
+            $craftCommandLine = $defaultCommand;
+        } else {
+            note(sprintf('Will run in %d repo(s) %s.', count($matches), $mode));
+            $craftCommandLine = trim((string) text(
+                label: 'Do you want to run the following command?',
+                default: $defaultCommand,
+                required: true,
+                hint: 'Edit if needed, then press Enter to run it in each repo.',
+            ));
+            if ($craftCommandLine === '') {
+                return self::SUCCESS;
+            }
         }
 
         if (! $this->option('no-ssh-auth')) {
@@ -140,11 +152,11 @@ class UpdateCraftCommand extends UpdateCommand
             package: $packagesByPath[$repo],
             onProgress: $onProgress,
             keepDdevRunning: $keepDdevRunning,
-            craftHandle: $handle,
+            craftCommandLine: $craftCommandLine,
         );
 
-        $buildCmd = function (string $repo, string $php, string $binary) use ($packagesByPath, $handle, $keepDdevRunning): array {
-            $cmd = [$php, $binary, 'update:single', $repo, $packagesByPath[$repo], '--craft-handle=' . $handle];
+        $buildCmd = function (string $repo, string $php, string $binary) use ($packagesByPath, $craftCommandLine, $keepDdevRunning): array {
+            $cmd = [$php, $binary, 'update:single', $repo, $packagesByPath[$repo], '--craft-command=' . $craftCommandLine];
             if (! $keepDdevRunning) {
                 $cmd[] = '--stop-ddev';
             }

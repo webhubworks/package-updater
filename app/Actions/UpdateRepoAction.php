@@ -21,9 +21,10 @@ final class UpdateRepoAction
      *                                      package when its constraint blocks $package from
      *                                      reaching the desired version.
      * @param  bool  $withAllDependencies  Pass -W to composer.
-     * @param  string|null  $craftHandle   When set, the update step runs `ddev craft update <handle>`
-     *                                     instead of `ddev composer update`. $package is still used
-     *                                     to track the locked version before/after.
+     * @param  string|null  $craftCommandLine  When set, the update step runs this shell command
+     *                                          (e.g. `ddev craft update commerce --interactive=0`)
+     *                                          instead of `ddev composer update`. $package is still
+     *                                          used to track the locked version before/after.
      */
     public static function update(
         string $repoPath,
@@ -32,11 +33,11 @@ final class UpdateRepoAction
         bool $withAllDependencies = false,
         ?string $updatePackage = null,
         bool $keepDdevRunning = true,
-        ?string $craftHandle = null,
+        ?string $craftCommandLine = null,
     ): RepoUpdateResult {
         $updatePackage = $updatePackage ?? $package;
 
-        if ($craftHandle === null && $updatePackage !== $package && self::lockedVersion($repoPath, $updatePackage) === null) {
+        if ($craftCommandLine === null && $updatePackage !== $package && self::lockedVersion($repoPath, $updatePackage) === null) {
             return RepoUpdateResult::skipped(
                 $repoPath,
                 "{$updatePackage} not present in composer.lock",
@@ -84,20 +85,20 @@ final class UpdateRepoAction
 
         $previousVersion = self::lockedVersion($repoPath, $package);
 
-        if ($craftHandle !== null) {
-            $updateArgs = ['ddev', 'craft', 'update', $craftHandle];
-            $updateLabel = 'ddev craft update ' . $craftHandle;
+        if ($craftCommandLine !== null) {
+            $updateCommand = $craftCommandLine;
+            $updateLabel = $craftCommandLine;
             $failStep = 'ddev craft update';
         } else {
-            $updateArgs = ['ddev', 'composer', 'update', $updatePackage, '--no-audit'];
+            $updateCommand = ['ddev', 'composer', 'update', $updatePackage, '--no-audit'];
             if ($withAllDependencies) {
-                $updateArgs[] = '-W';
+                $updateCommand[] = '-W';
             }
             $updateLabel = 'ddev composer update ' . $updatePackage . ($withAllDependencies ? ' -W' : '');
             $failStep = 'ddev composer update';
         }
 
-        $update = self::run($updateArgs, $repoPath, 1800, $onProgress, $updateLabel);
+        $update = self::run($updateCommand, $repoPath, 1800, $onProgress, $updateLabel);
         if (! $update->isSuccessful()) {
             return self::fail($repoPath, $branch, $failStep, $update);
         }
@@ -276,18 +277,21 @@ final class UpdateRepoAction
     }
 
     /**
-     * @param  list<string>  $command
+     * @param  list<string>|string  $command  An array of args, or a shell command line
+     *                                        (the latter is run via Process::fromShellCommandline).
      * @param  callable(string, ?string, ?string): void|null  $onProgress
      */
     private static function run(
-        array $command,
+        array|string $command,
         string $cwd,
         int $timeout = 120,
         ?callable $onProgress = null,
         string $label = '',
         bool $stream = true,
     ): Process {
-        $process = new Process($command, $cwd);
+        $process = is_string($command)
+            ? Process::fromShellCommandline($command, $cwd)
+            : new Process($command, $cwd);
         $process->setTimeout($timeout);
 
         if ($stream && $onProgress !== null && $label !== '') {
