@@ -211,13 +211,13 @@ final class UpdateRepoAction
         }
 
         $installedVersion = self::lockedVersion($repoPath, $package);
-        $afterStatus = self::run(['git', 'status', '--porcelain', 'composer.lock'], $repoPath, 60, null, '', stream: false);
-        $hasLockChange = trim($afterStatus->getOutput()) !== '';
+        $afterStatus = self::run(['git', 'status', '--porcelain'], $repoPath, 60, null, '', stream: false);
+        $hasUncommittedChanges = trim($afterStatus->getOutput()) !== '';
 
         return RepoUpdateResult::success(
             $repoPath,
             $branch,
-            $hasLockChange,
+            $hasUncommittedChanges,
             $previousVersion,
             $installedVersion,
             $prepRan,

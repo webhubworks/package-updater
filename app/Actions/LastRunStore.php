@@ -61,4 +61,57 @@ final class LastRunStore
     {
         return base_path('logs/last-run.json');
     }
+
+    /**
+     * Persist the per-repo results of the most recent run so post-run tools
+     * (e.g. `open`) can act on them later without re-executing anything.
+     *
+     * @param  list<array<string, mixed>>  $results  RepoUpdateResult::toArray() values
+     */
+    public static function saveResults(string $command, array $results): void
+    {
+        $path = self::resultsPath();
+        $dir = dirname($path);
+        if (! is_dir($dir) && ! @mkdir($dir, 0755, true) && ! is_dir($dir)) {
+            return;
+        }
+
+        @file_put_contents($path, json_encode([
+            'command' => $command,
+            'results' => $results,
+            'timestamp' => date('c'),
+        ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+    }
+
+    /**
+     * @return array{command: string, results: list<array<string, mixed>>, timestamp: ?string}|null
+     */
+    public static function loadResults(): ?array
+    {
+        $path = self::resultsPath();
+        if (! is_file($path)) {
+            return null;
+        }
+
+        $content = @file_get_contents($path);
+        if ($content === false) {
+            return null;
+        }
+
+        $data = json_decode($content, true);
+        if (! is_array($data) || ! isset($data['command']) || ! is_array($data['results'] ?? null)) {
+            return null;
+        }
+
+        return [
+            'command' => (string) $data['command'],
+            'results' => array_values($data['results']),
+            'timestamp' => is_string($data['timestamp'] ?? null) ? $data['timestamp'] : null,
+        ];
+    }
+
+    public static function resultsPath(): string
+    {
+        return base_path('logs/last-results.json');
+    }
 }

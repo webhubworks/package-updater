@@ -28,6 +28,8 @@ class UpdateCraftCommand extends UpdateCommand
         {--crawl-repo=* : After composer prep, run the site-crawler only in these repo path(s). Skips the interactive crawler-selection prompt.}
         {--no-crawl : Skip the site-crawler step entirely.}
         {--crawler-command= : Full shell command to run as the crawler (skips the editable-command prompt). Defaults to `site-crawler crawl:ddev --exclude="assets,variant,index.php,downloads,actions,.pdf"`.}
+        {--open : After the run, open every repo with uncommitted changes in GitKraken (skips the prompt)}
+        {--no-open : Skip the end-of-run "open in GitKraken" prompt entirely}
         {--yes : Skip the confirmation prompt}';
 
     protected $description = 'Run `ddev php craft update <handle>` across local repos containing the given Craft plugin (or Craft itself)';
@@ -168,7 +170,10 @@ class UpdateCraftCommand extends UpdateCommand
             ? $this->runSequential($repos, $updater)
             : $this->runParallel($repos, $parallel, $buildCmd);
 
-        $this->printSummary(array_merge($preSkipped, $results), $targetVersion);
+        $allResults = array_merge($preSkipped, $results);
+        $this->printSummary($allResults, $targetVersion);
+        LastRunStore::saveResults('update:craft', array_map(fn ($r) => $r->toArray(), $allResults));
+        $this->offerOpenPrompt($allResults);
 
         return self::SUCCESS;
     }

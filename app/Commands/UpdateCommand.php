@@ -4,6 +4,7 @@ namespace App\Commands;
 
 use App\Actions\FindReposAction;
 use App\Actions\LastRunStore;
+use App\Actions\OpenInGitKrakenAction;
 use App\Actions\UpdateRepoAction;
 use App\DataTransferObjects\RepoUpdateResult;
 use Illuminate\Console\OutputStyle;
@@ -34,6 +35,8 @@ class UpdateCommand extends Command
         {--update-package= : Run `composer update` on this package instead of the target. Useful for transitive targets where a parent constraint blocks reaching the desired version.}
         {--target-version= : Skip repos whose composer.lock already has this version of the package}
         {--stop-ddev : Stop the ddev project in each repo after a successful update (default: keep running)}
+        {--open : After the run, open every repo with uncommitted changes in GitKraken (skips the prompt)}
+        {--no-open : Skip the end-of-run "open in GitKraken" prompt entirely}
         {--yes : Skip the confirmation prompt}';
 
     protected $description = 'Update a Composer package across all local repos that depend on it';
@@ -191,7 +194,10 @@ class UpdateCommand extends Command
             ? $this->runSequential($repos, $updater)
             : $this->runParallel($repos, $parallel, $buildCmd);
 
-        $this->printSummary(array_merge($preSkipped, $results), $targetVersion);
+        $allResults = array_merge($preSkipped, $results);
+        $this->printSummary($allResults, $targetVersion);
+        LastRunStore::saveResults('update', array_map(fn ($r) => $r->toArray(), $allResults));
+        $this->offerOpenPrompt($allResults);
 
         return self::SUCCESS;
     }
@@ -215,6 +221,62 @@ class UpdateCommand extends Command
             default: false,
             hint: 'Without -W, composer updates only the named package and refuses if any of its deps would also need to move.',
         );
+    }
+
+    /**
+     * Offer to open every repo that ended the run with uncommitted changes
+     * in GitKraken (one tab per repo via the gitkraken:// URL scheme). The
+     * default selection is all such repos. Skipped if --no-open is set, or
+     * if --yes is set without an explicit --open.
+     *
+     * @param  list<RepoUpdateResult>  $results
+     */
+    protected function offerOpenPrompt(array $results): void
+    {
+        if ($this->option('no-open')) {
+            return;
+        }
+
+        $candidates = array_values(array_filter(
+            $results,
+            fn (RepoUpdateResult $r) => $r->hasUncommittedChanges,
+        ));
+        if (empty($candidates)) {
+            return;
+        }
+
+        if ($this->option('open')) {
+            $paths = array_map(fn ($r) => $r->repoPath, $candidates);
+        } elseif ($this->option('yes')) {
+            // Non-interactive run without an explicit --open: don't open.
+            return;
+        } else {
+            $options = [];
+            foreach ($candidates as $r) {
+                $options[$r->repoPath] = basename($r->repoPath);
+            }
+            $selected = multiselect(
+                label: sprintf('Open %d repo(s) with uncommitted changes in GitKraken?', count($candidates)),
+                options: $options,
+                default: array_keys($options),
+                hint: 'Space to toggle · Ctrl+A to select/deselect all · Enter to confirm',
+                required: false,
+            );
+            $paths = array_values(array_map('strval', (array) $selected));
+        }
+
+        if (empty($paths)) {
+            return;
+        }
+
+        $report = OpenInGitKrakenAction::open($paths);
+        info(sprintf('Opened %d repo(s) in GitKraken.', $report['opened']));
+        if (! empty($report['failed'])) {
+            warning(sprintf('Failed to open %d repo(s):', count($report['failed'])));
+            foreach ($report['failed'] as $p) {
+                $this->line("  <fg=yellow>! {$p}</>");
+            }
+        }
     }
 
     /**
@@ -849,8 +911,8 @@ class UpdateCommand extends Command
             $parts[] = 'unchanged';
         }
 
-        if ($r->hasUncommittedLock) {
-            $parts[] = 'lock uncommitted';
+        if ($r->hasUncommittedChanges) {
+            $parts[] = 'uncommitted changes';
         }
 
         return implode(' · ', $parts) ?: '-';
