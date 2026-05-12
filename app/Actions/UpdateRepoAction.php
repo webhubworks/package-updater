@@ -94,10 +94,13 @@ final class UpdateRepoAction
             return self::fail($repoPath, $branch, "git checkout {$branch}", $checkout);
         }
 
+        $preHead = self::headSha($repoPath);
         $pull = self::run(['git', 'pull', '--ff-only'], $repoPath, 600, $onProgress, 'git pull --ff-only');
         if (! $pull->isSuccessful()) {
             return self::fail($repoPath, $branch, 'git pull', $pull);
         }
+        $postHead = self::headSha($repoPath);
+        $pulledChanges = $preHead !== null && $postHead !== null && $preHead !== $postHead;
 
         $detectedStatus = self::ddevStatus($repoPath);
 
@@ -112,6 +115,22 @@ final class UpdateRepoAction
             $start = self::run(['ddev', 'start'], $repoPath, 900, $onProgress, 'ddev start');
             if (! $start->isSuccessful()) {
                 return self::fail($repoPath, $branch, 'ddev start', $start);
+            }
+        }
+
+        if ($craftCommandLine !== null && $pulledChanges) {
+            // Pulled in commits from the remote — sync deps / migrations / project
+            // config before we run our own craft update on top.
+            $syncSteps = [
+                [['ddev', 'composer', 'install'], 'ddev composer install'],
+                [['ddev', 'php', 'craft', 'migrate/all'], 'ddev php craft migrate/all'],
+                [['ddev', 'php', 'craft', 'project-config/apply'], 'ddev php craft project-config/apply'],
+            ];
+            foreach ($syncSteps as [$args, $label]) {
+                $proc = self::run($args, $repoPath, 1800, $onProgress, $label);
+                if (! $proc->isSuccessful()) {
+                    return self::fail($repoPath, $branch, $label, $proc);
+                }
             }
         }
 
@@ -361,6 +380,17 @@ final class UpdateRepoAction
         $status = $data['raw']['status'] ?? null;
 
         return is_string($status) ? strtolower($status) : null;
+    }
+
+    private static function headSha(string $repoPath): ?string
+    {
+        $proc = self::run(['git', 'rev-parse', 'HEAD'], $repoPath, 30, null, '', stream: false);
+        if (! $proc->isSuccessful()) {
+            return null;
+        }
+        $sha = trim($proc->getOutput());
+
+        return $sha !== '' ? $sha : null;
     }
 
     private static function pickBranch(string $repoPath): ?string
