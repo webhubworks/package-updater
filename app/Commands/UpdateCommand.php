@@ -93,31 +93,8 @@ class UpdateCommand extends Command
             return self::SUCCESS;
         }
 
-        $targetVersion = $this->resolveTargetVersion();
-
-        /** @var list<RepoUpdateResult> $preSkipped */
-        $preSkipped = [];
-        if ($targetVersion !== null) {
-            $remaining = [];
-            foreach ($matches as $m) {
-                if (self::versionsEqual($m['version'], $targetVersion)) {
-                    $preSkipped[] = RepoUpdateResult::skipped(
-                        $m['path'],
-                        "already at {$targetVersion}",
-                    );
-                    continue;
-                }
-                $remaining[] = $m;
-            }
-            $matches = $remaining;
-
-            info(sprintf(
-                '%d repo(s) already at %s — will skip. %d remain to update.',
-                count($preSkipped),
-                $targetVersion,
-                count($matches),
-            ));
-        }
+        $rawTarget = $this->resolveTargetVersion();
+        [$matches, $preSkipped, $targetVersion] = $this->applyTargetVersionFilter($matches, $rawTarget);
 
         if (empty($matches)) {
             $this->printSummary($preSkipped, $targetVersion);
@@ -185,7 +162,7 @@ class UpdateCommand extends Command
         LastRunStore::save('update', ['package' => $package], [
             'reps-dir' => $reposDir,
             'parallel' => (string) $parallel,
-            'target-version' => $targetVersion,
+            'target-version' => $rawTarget,
             'update-package' => $updatePackage !== $package ? $updatePackage : null,
             'with-all-dependencies' => $withAllDependencies,
             'limit' => $effectiveLimit !== null ? (string) $effectiveLimit : null,
@@ -288,13 +265,101 @@ class UpdateCommand extends Command
         }
 
         $value = text(
-            label: 'Target version to skip repos already updated (leave blank to skip none)',
-            placeholder: 'e.g. 1.5.0',
+            label: 'Target version (blank = no constraint; "5.9.23" = same-major only; "!5.9.23" = force across majors)',
+            placeholder: 'e.g. 5.9.23 or !5.9.23',
             default: '',
         );
 
         $value = trim($value);
         return $value === '' ? null : $value;
+    }
+
+    /**
+     * Split the raw target value into a cleaned version and a force-major flag.
+     * A leading "!" means "yes, cross major-version boundaries"; otherwise the
+     * filter keeps only repos whose current major matches the target.
+     *
+     * @return array{0: ?string, 1: bool}
+     */
+    protected static function parseTargetVersion(?string $raw): array
+    {
+        if ($raw === null) {
+            return [null, false];
+        }
+        $trimmed = trim($raw);
+        if ($trimmed === '') {
+            return [null, false];
+        }
+        if (str_starts_with($trimmed, '!')) {
+            return [trim(substr($trimmed, 1)), true];
+        }
+
+        return [$trimmed, false];
+    }
+
+    protected static function extractMajor(string $version): ?int
+    {
+        $v = ltrim(trim($version), 'vV');
+        if (preg_match('/^(\d+)/', $v, $m)) {
+            return (int) $m[1];
+        }
+        return null;
+    }
+
+    /**
+     * Apply the target-version filter: pre-skip repos already at the cleaned
+     * target, and (unless forceMajor) repos whose current major differs from
+     * the target's major. Returns the remaining matches, the pre-skipped
+     * results, and the cleaned target (without the leading "!").
+     *
+     * @param  list<array{path: string, version: string, ...}>  $matches
+     * @return array{0: list<array<string, mixed>>, 1: list<RepoUpdateResult>, 2: ?string}
+     */
+    protected function applyTargetVersionFilter(array $matches, ?string $rawTarget): array
+    {
+        [$cleanTarget, $forceMajor] = self::parseTargetVersion($rawTarget);
+
+        /** @var list<RepoUpdateResult> $preSkipped */
+        $preSkipped = [];
+        if ($cleanTarget === null) {
+            return [$matches, $preSkipped, null];
+        }
+
+        $targetMajor = self::extractMajor($cleanTarget);
+        $alreadyAt = 0;
+        $differentMajor = 0;
+        $remaining = [];
+
+        foreach ($matches as $m) {
+            if (self::versionsEqual($m['version'], $cleanTarget)) {
+                $preSkipped[] = RepoUpdateResult::skipped($m['path'], "already at {$cleanTarget}");
+                $alreadyAt++;
+                continue;
+            }
+
+            if (! $forceMajor && $targetMajor !== null) {
+                $currentMajor = self::extractMajor($m['version']);
+                if ($currentMajor !== null && $currentMajor !== $targetMajor) {
+                    $preSkipped[] = RepoUpdateResult::skipped(
+                        $m['path'],
+                        "on major {$currentMajor} ({$m['version']}); prefix target with `!` to cross majors",
+                    );
+                    $differentMajor++;
+                    continue;
+                }
+            }
+
+            $remaining[] = $m;
+        }
+
+        $msg = sprintf('%d already at %s', $alreadyAt, $cleanTarget);
+        if (! $forceMajor) {
+            $msg .= sprintf(', %d on different major', $differentMajor);
+        }
+        $msg .= sprintf(' — will skip. %d remain to update.', count($remaining));
+        info($msg);
+
+        return [$remaining, $preSkipped, $cleanTarget];
     }
 
     /**

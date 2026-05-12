@@ -5,7 +5,6 @@ namespace App\Commands;
 use App\Actions\FindCraftReposAction;
 use App\Actions\LastRunStore;
 use App\Actions\UpdateRepoAction;
-use App\DataTransferObjects\RepoUpdateResult;
 
 use function Laravel\Prompts\info;
 use function Laravel\Prompts\note;
@@ -79,31 +78,8 @@ class UpdateCraftCommand extends UpdateCommand
             return self::SUCCESS;
         }
 
-        $targetVersion = $this->resolveTargetVersion();
-
-        /** @var list<RepoUpdateResult> $preSkipped */
-        $preSkipped = [];
-        if ($targetVersion !== null) {
-            $remaining = [];
-            foreach ($matches as $m) {
-                if (self::versionsEqual($m['version'], $targetVersion)) {
-                    $preSkipped[] = RepoUpdateResult::skipped(
-                        $m['path'],
-                        "already at {$targetVersion}",
-                    );
-                    continue;
-                }
-                $remaining[] = $m;
-            }
-            $matches = $remaining;
-
-            info(sprintf(
-                '%d repo(s) already at %s — will skip. %d remain to update.',
-                count($preSkipped),
-                $targetVersion,
-                count($matches),
-            ));
-        }
+        $rawTarget = $this->resolveTargetVersion();
+        [$matches, $preSkipped, $targetVersion] = $this->applyTargetVersionFilter($matches, $rawTarget);
 
         if (empty($matches)) {
             $this->printSummary($preSkipped, $targetVersion);
@@ -148,7 +124,7 @@ class UpdateCraftCommand extends UpdateCommand
         LastRunStore::save('update:craft', ['handle' => $handle], [
             'reps-dir' => $reposDir,
             'parallel' => (string) $parallel,
-            'target-version' => $targetVersion,
+            'target-version' => $rawTarget,
             'limit' => $effectiveLimit !== null ? (string) $effectiveLimit : null,
             'stop-ddev' => ! $keepDdevRunning,
             'no-ssh-auth' => (bool) $this->option('no-ssh-auth'),
