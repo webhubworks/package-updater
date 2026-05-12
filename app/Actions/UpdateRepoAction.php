@@ -7,7 +7,7 @@ use Symfony\Component\Process\Process;
 
 final class UpdateRepoAction
 {
-    private const BranchCandidates = ['develop', 'staging', 'main', 'master'];
+    private const BranchCandidates = ['develop', 'dev', 'staging', 'stag', 'main', 'master'];
 
     /**
      * @param  callable(string $step, ?string $type, ?string $chunk): void|null  $onProgress
