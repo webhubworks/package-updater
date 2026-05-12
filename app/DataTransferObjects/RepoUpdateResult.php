@@ -61,9 +61,16 @@ final readonly class RepoUpdateResult
         );
     }
 
-    public static function skipped(string $path, string $message, ?string $transcriptPath = null): self
+    public static function skipped(string $path, string $message, ?string $transcriptPath = null, bool $hasUncommittedChanges = false): self
     {
-        return new self($path, 'skipped', null, $message, transcriptPath: $transcriptPath);
+        return new self(
+            repoPath: $path,
+            status: 'skipped',
+            branch: null,
+            message: $message,
+            hasUncommittedChanges: $hasUncommittedChanges,
+            transcriptPath: $transcriptPath,
+        );
     }
 
     public static function failed(string $path, string $message, ?string $branch = null, ?string $logPath = null, ?string $transcriptPath = null): self

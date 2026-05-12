@@ -81,7 +81,7 @@ final class UpdateRepoAction
         }
 
         if (trim($status->getOutput()) !== '') {
-            return RepoUpdateResult::skipped($repoPath, 'uncommitted changes');
+            return RepoUpdateResult::skipped($repoPath, 'uncommitted changes', hasUncommittedChanges: true);
         }
 
         $branch = self::pickBranch($repoPath);
