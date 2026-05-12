@@ -22,6 +22,7 @@ final readonly class RepoUpdateResult
         public ?string $crawlerLogPath = null,
         /** @var list<string> */
         public array $crawlerServerErrorUrls = [],
+        public ?string $transcriptPath = null,
     ) {}
 
     public static function success(
@@ -38,6 +39,7 @@ final readonly class RepoUpdateResult
         bool $crawlerFailed = false,
         ?string $crawlerLogPath = null,
         array $crawlerServerErrorUrls = [],
+        ?string $transcriptPath = null,
     ): self {
         return new self(
             repoPath: $path,
@@ -55,15 +57,16 @@ final readonly class RepoUpdateResult
             crawlerFailed: $crawlerFailed,
             crawlerLogPath: $crawlerLogPath,
             crawlerServerErrorUrls: $crawlerServerErrorUrls,
+            transcriptPath: $transcriptPath,
         );
     }
 
-    public static function skipped(string $path, string $message): self
+    public static function skipped(string $path, string $message, ?string $transcriptPath = null): self
     {
-        return new self($path, 'skipped', null, $message);
+        return new self($path, 'skipped', null, $message, transcriptPath: $transcriptPath);
     }
 
-    public static function failed(string $path, string $message, ?string $branch = null, ?string $logPath = null): self
+    public static function failed(string $path, string $message, ?string $branch = null, ?string $logPath = null, ?string $transcriptPath = null): self
     {
         return new self(
             repoPath: $path,
@@ -71,6 +74,7 @@ final readonly class RepoUpdateResult
             branch: $branch,
             message: $message,
             logPath: $logPath,
+            transcriptPath: $transcriptPath,
         );
     }
 
@@ -94,6 +98,7 @@ final readonly class RepoUpdateResult
             'crawlerFailed' => $this->crawlerFailed,
             'crawlerLogPath' => $this->crawlerLogPath,
             'crawlerServerErrorUrls' => $this->crawlerServerErrorUrls,
+            'transcriptPath' => $this->transcriptPath,
         ];
     }
 
@@ -117,6 +122,7 @@ final readonly class RepoUpdateResult
             crawlerFailed: $data['crawlerFailed'] ?? false,
             crawlerLogPath: $data['crawlerLogPath'] ?? null,
             crawlerServerErrorUrls: is_array($data['crawlerServerErrorUrls'] ?? null) ? array_values($data['crawlerServerErrorUrls']) : [],
+            transcriptPath: $data['transcriptPath'] ?? null,
         );
     }
 }

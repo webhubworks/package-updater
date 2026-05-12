@@ -749,6 +749,9 @@ class UpdateCommand extends Command
                 if ($r->prepLogPath !== null) {
                     $this->line("    <fg=gray>log:</> {$r->prepLogPath}");
                 }
+                if ($r->transcriptPath !== null) {
+                    $this->line("    <fg=gray>transcript:</> {$r->transcriptPath}");
+                }
             }
         }
 
@@ -766,6 +769,9 @@ class UpdateCommand extends Command
                 $this->line("  <fg=yellow;options=bold>! {$name}</> — site-crawler crawl:ddev failed");
                 if ($r->crawlerLogPath !== null) {
                     $this->line("    <fg=gray>log:</> {$r->crawlerLogPath}");
+                }
+                if ($r->transcriptPath !== null) {
+                    $this->line("    <fg=gray>transcript:</> {$r->transcriptPath}");
                 }
             }
         }
@@ -788,6 +794,9 @@ class UpdateCommand extends Command
                 }
                 if ($r->crawlerLogPath !== null) {
                     $this->line("    <fg=gray>log:</> {$r->crawlerLogPath}");
+                }
+                if ($r->transcriptPath !== null) {
+                    $this->line("    <fg=gray>transcript:</> {$r->transcriptPath}");
                 }
             }
         }
@@ -869,6 +878,9 @@ class UpdateCommand extends Command
         }
         if ($r->logPath !== null) {
             $this->line("    <fg=gray>log:</>   {$r->logPath}");
+        }
+        if ($r->transcriptPath !== null) {
+            $this->line("    <fg=gray>transcript:</> {$r->transcriptPath}");
         }
     }
 

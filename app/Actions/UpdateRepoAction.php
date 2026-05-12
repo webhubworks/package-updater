@@ -40,6 +40,33 @@ final class UpdateRepoAction
         ?string $craftCommandLine = null,
         ?string $crawlerCommandLine = null,
     ): RepoUpdateResult {
+        $transcriptPath = self::openTranscript($repoPath);
+        try {
+            $result = self::doUpdate($repoPath, $package, $onProgress, $withAllDependencies, $updatePackage, $keepDdevRunning, $craftCommandLine, $crawlerCommandLine);
+        } finally {
+            self::closeTranscript();
+        }
+
+        return $transcriptPath === null ? $result : self::attachTranscript($result, $transcriptPath);
+    }
+
+    private static function attachTranscript(RepoUpdateResult $result, string $path): RepoUpdateResult
+    {
+        $data = $result->toArray();
+        $data['transcriptPath'] = $path;
+        return RepoUpdateResult::fromArray($data);
+    }
+
+    private static function doUpdate(
+        string $repoPath,
+        string $package,
+        ?callable $onProgress,
+        bool $withAllDependencies,
+        ?string $updatePackage,
+        bool $keepDdevRunning,
+        ?string $craftCommandLine,
+        ?string $crawlerCommandLine,
+    ): RepoUpdateResult {
         $updatePackage = $updatePackage ?? $package;
 
         if ($craftCommandLine === null && $updatePackage !== $package && self::lockedVersion($repoPath, $updatePackage) === null) {
@@ -366,6 +393,8 @@ final class UpdateRepoAction
         string $label = '',
         bool $stream = true,
     ): Process {
+        self::transcriptStep($label, $command);
+
         $process = is_string($command)
             ? Process::fromShellCommandline($command, $cwd)
             : new Process($command, $cwd);
@@ -374,13 +403,78 @@ final class UpdateRepoAction
         if ($stream && $onProgress !== null && $label !== '') {
             $onProgress('step-start', null, $label);
             $process->run(function (string $type, string $buffer) use ($onProgress, $label): void {
+                self::transcriptAppend($type === Process::ERR ? "[stderr] {$buffer}" : $buffer);
                 $onProgress($label, $type === Process::ERR ? 'err' : 'out', $buffer);
             });
         } else {
             $process->run();
+            self::transcriptAppend($process->getOutput());
+            if ($process->getErrorOutput() !== '') {
+                self::transcriptAppend("[stderr] " . $process->getErrorOutput());
+            }
         }
 
+        self::transcriptExit($process->getExitCode());
+
         return $process;
+    }
+
+    /** @var resource|null */
+    private static $transcriptHandle = null;
+
+    private static function openTranscript(string $repoPath): ?string
+    {
+        $dir = dirname(__DIR__, 2) . '/logs/transcripts';
+        if (! is_dir($dir) && ! @mkdir($dir, 0755, true) && ! is_dir($dir)) {
+            return null;
+        }
+        $slug = preg_replace('/[^a-z0-9]+/i', '-', basename($repoPath));
+        $file = $dir . '/' . trim((string) $slug, '-') . '-' . date('Ymd-His') . '.log';
+        $handle = @fopen($file, 'w');
+        if ($handle === false) {
+            return null;
+        }
+        self::$transcriptHandle = $handle;
+        @fwrite($handle, "# Repo: {$repoPath}\n# Started: " . date('c') . "\n");
+        return $file;
+    }
+
+    private static function closeTranscript(): void
+    {
+        if (self::$transcriptHandle === null) {
+            return;
+        }
+        @fwrite(self::$transcriptHandle, "\n# Finished: " . date('c') . "\n");
+        @fclose(self::$transcriptHandle);
+        self::$transcriptHandle = null;
+    }
+
+    /** @param list<string>|string $command */
+    private static function transcriptStep(string $label, array|string $command): void
+    {
+        if (self::$transcriptHandle === null) {
+            return;
+        }
+        $cmdStr = is_array($command) ? implode(' ', $command) : $command;
+        $header = $label !== '' ? $label : $cmdStr;
+        @fwrite(self::$transcriptHandle, "\n========== STEP: {$header} ==========\n");
+        @fwrite(self::$transcriptHandle, "\$ {$cmdStr}\n");
+    }
+
+    private static function transcriptAppend(string $text): void
+    {
+        if (self::$transcriptHandle === null || $text === '') {
+            return;
+        }
+        @fwrite(self::$transcriptHandle, $text);
+    }
+
+    private static function transcriptExit(?int $code): void
+    {
+        if (self::$transcriptHandle === null) {
+            return;
+        }
+        @fwrite(self::$transcriptHandle, "\n(exit: " . ($code ?? '?') . ")\n");
     }
 
     private static function fail(string $repoPath, ?string $branch, string $step, Process $process): RepoUpdateResult
