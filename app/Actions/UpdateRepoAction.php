@@ -400,12 +400,20 @@ final class UpdateRepoAction
             : new Process($command, $cwd);
         $process->setTimeout($timeout);
 
-        if ($stream && $onProgress !== null && $label !== '') {
-            $onProgress('step-start', null, $label);
+        if ($stream) {
+            // Stream chunks even when no $onProgress is set (e.g. inside
+            // update:single subprocesses) so the sudo-prompt detector can
+            // kill ddev before it hangs on a Password: prompt.
+            if ($onProgress !== null && $label !== '') {
+                $onProgress('step-start', null, $label);
+            }
             $sudoDetected = false;
             $process->run(function (string $type, string $buffer) use ($onProgress, $label, $process, &$sudoDetected): void {
                 self::transcriptAppend($type === Process::ERR ? "[stderr] {$buffer}" : $buffer);
-                $onProgress($label, $type === Process::ERR ? 'err' : 'out', $buffer);
+
+                if ($onProgress !== null && $label !== '') {
+                    $onProgress($label, $type === Process::ERR ? 'err' : 'out', $buffer);
+                }
 
                 if (! $sudoDetected && self::isSudoPrompt($buffer)) {
                     $sudoDetected = true;
