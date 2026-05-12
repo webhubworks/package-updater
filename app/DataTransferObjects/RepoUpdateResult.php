@@ -17,6 +17,9 @@ final readonly class RepoUpdateResult
         public ?int $testsFailed = null,
         public ?string $testsSummary = null,
         public ?string $prepLogPath = null,
+        public bool $crawlerRan = false,
+        public bool $crawlerFailed = false,
+        public ?string $crawlerLogPath = null,
     ) {}
 
     public static function success(
@@ -29,6 +32,9 @@ final readonly class RepoUpdateResult
         ?int $testsFailed = null,
         ?string $testsSummary = null,
         ?string $prepLogPath = null,
+        bool $crawlerRan = false,
+        bool $crawlerFailed = false,
+        ?string $crawlerLogPath = null,
     ): self {
         return new self(
             repoPath: $path,
@@ -42,6 +48,9 @@ final readonly class RepoUpdateResult
             testsFailed: $testsFailed,
             testsSummary: $testsSummary,
             prepLogPath: $prepLogPath,
+            crawlerRan: $crawlerRan,
+            crawlerFailed: $crawlerFailed,
+            crawlerLogPath: $crawlerLogPath,
         );
     }
 
@@ -77,6 +86,9 @@ final readonly class RepoUpdateResult
             'testsFailed' => $this->testsFailed,
             'testsSummary' => $this->testsSummary,
             'prepLogPath' => $this->prepLogPath,
+            'crawlerRan' => $this->crawlerRan,
+            'crawlerFailed' => $this->crawlerFailed,
+            'crawlerLogPath' => $this->crawlerLogPath,
         ];
     }
 
@@ -96,6 +108,9 @@ final readonly class RepoUpdateResult
             testsFailed: $data['testsFailed'] ?? null,
             testsSummary: $data['testsSummary'] ?? null,
             prepLogPath: $data['prepLogPath'] ?? null,
+            crawlerRan: $data['crawlerRan'] ?? false,
+            crawlerFailed: $data['crawlerFailed'] ?? false,
+            crawlerLogPath: $data['crawlerLogPath'] ?? null,
         );
     }
 }

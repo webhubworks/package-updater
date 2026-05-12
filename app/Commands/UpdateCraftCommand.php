@@ -7,6 +7,7 @@ use App\Actions\LastRunStore;
 use App\Actions\UpdateRepoAction;
 
 use function Laravel\Prompts\info;
+use function Laravel\Prompts\multiselect;
 use function Laravel\Prompts\note;
 use function Laravel\Prompts\table;
 use function Laravel\Prompts\text;
@@ -24,6 +25,8 @@ class UpdateCraftCommand extends UpdateCommand
         {--target-version= : Skip repos already at this version of the matched package}
         {--stop-ddev : Stop the ddev project in each repo after a successful update (default: keep running)}
         {--craft-command= : Full shell command to run in each repo (skips the editable-command prompt). Defaults to `ddev craft update <handle> --interactive=0 --with-expired --minor-only --backup=1`.}
+        {--crawl-repo=* : After composer prep, run `site-crawler crawl:ddev` only in these repo path(s). Skips the interactive crawler-selection prompt.}
+        {--no-crawl : Skip the site-crawler step entirely.}
         {--yes : Skip the confirmation prompt}';
 
     protected $description = 'Run `ddev craft update <handle>` across local repos containing the given Craft plugin (or Craft itself)';
@@ -86,6 +89,8 @@ class UpdateCraftCommand extends UpdateCommand
 
         $parallel = $this->resolveParallel();
         $keepDdevRunning = $this->resolveKeepDdevRunning();
+        $crawlPaths = $this->resolveCrawlSelection($matches);
+        $crawlSet = array_flip($crawlPaths);
 
         $mode = $parallel === 1 ? 'sequentially' : "with {$parallel} workers in parallel";
         $defaultCommand = "ddev craft update {$handle} --interactive=0 --with-expired --minor-only --backup=1";
@@ -116,6 +121,8 @@ class UpdateCraftCommand extends UpdateCommand
             'stop-ddev' => ! $keepDdevRunning,
             'no-ssh-auth' => (bool) $this->option('no-ssh-auth'),
             'craft-command' => $craftCommandLine,
+            'crawl-repo' => $crawlPaths,
+            'no-crawl' => empty($crawlPaths),
             'yes' => true,
         ]);
 
@@ -134,12 +141,16 @@ class UpdateCraftCommand extends UpdateCommand
             onProgress: $onProgress,
             keepDdevRunning: $keepDdevRunning,
             craftCommandLine: $craftCommandLine,
+            runCrawler: isset($crawlSet[$repo]),
         );
 
-        $buildCmd = function (string $repo, string $php, string $binary) use ($packagesByPath, $craftCommandLine, $keepDdevRunning): array {
+        $buildCmd = function (string $repo, string $php, string $binary) use ($packagesByPath, $craftCommandLine, $keepDdevRunning, $crawlSet): array {
             $cmd = [$php, $binary, 'update:single', $repo, $packagesByPath[$repo], '--craft-command=' . $craftCommandLine];
             if (! $keepDdevRunning) {
                 $cmd[] = '--stop-ddev';
+            }
+            if (isset($crawlSet[$repo])) {
+                $cmd[] = '--run-crawler';
             }
             return $cmd;
         };
@@ -153,5 +164,52 @@ class UpdateCraftCommand extends UpdateCommand
         $this->printSummary(array_merge($preSkipped, $results), $targetVersion);
 
         return self::SUCCESS;
+    }
+
+    /**
+     * Resolve which of the selected repos should also run the post-prep
+     * site-crawler. Precedence:
+     *   1. --no-crawl       (returns [])
+     *   2. --crawl-repo=... (uses those paths)
+     *   3. --yes            (defaults to all selected repos)
+     *   4. multiselect      (default: all selected; Ctrl+A toggles)
+     *
+     * @param  list<array{path: string, version: string, package: string}>  $matches
+     * @return list<string>
+     */
+    protected function resolveCrawlSelection(array $matches): array
+    {
+        if ($this->option('no-crawl')) {
+            return [];
+        }
+
+        $cli = array_values(array_filter(
+            array_map('strval', (array) $this->option('crawl-repo')),
+            fn ($p) => $p !== '',
+        ));
+        if (! empty($cli)) {
+            return $cli;
+        }
+
+        $allPaths = array_map(fn ($m) => $m['path'], $matches);
+
+        if ($this->option('yes')) {
+            return $allPaths;
+        }
+
+        $options = [];
+        foreach ($matches as $m) {
+            $options[$m['path']] = basename($m['path']);
+        }
+
+        $selected = multiselect(
+            label: 'Run site-crawler crawl:ddev in which of these repos? (after composer prep)',
+            options: $options,
+            default: array_keys($options),
+            hint: 'Space to toggle · Ctrl+A to select/deselect all · Enter to confirm',
+            required: false,
+        );
+
+        return array_values(array_map('strval', (array) $selected));
     }
 }

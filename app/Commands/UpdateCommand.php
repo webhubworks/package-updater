@@ -752,6 +752,24 @@ class UpdateCommand extends Command
             }
         }
 
+        $crawlerFailures = array_values(array_filter(
+            $success,
+            fn (RepoUpdateResult $r) => $r->crawlerRan && $r->crawlerFailed,
+        ));
+        if (! empty($crawlerFailures)) {
+            warning(sprintf(
+                '%d repo(s) had a site-crawler failure (update itself succeeded):',
+                count($crawlerFailures),
+            ));
+            foreach ($crawlerFailures as $r) {
+                $name = basename($r->repoPath);
+                $this->line("  <fg=yellow;options=bold>! {$name}</> — site-crawler crawl:ddev failed");
+                if ($r->crawlerLogPath !== null) {
+                    $this->line("    <fg=gray>log:</> {$r->crawlerLogPath}");
+                }
+            }
+        }
+
         if (! empty($skipped)) {
             note('Skipped repos:');
             table(
