@@ -94,7 +94,9 @@ final class FindReposAction
 
         $walk = function (string $dir, int $depth) use (&$walk, &$repos, $skip, $maxDepth): void {
             if (is_file($dir . '/composer.lock')) {
-                $repos[] = $dir;
+                if (! self::isCraftPluginRepo($dir)) {
+                    $repos[] = $dir;
+                }
 
                 return;
             }
@@ -117,6 +119,30 @@ final class FindReposAction
         $walk($reposDir, 0);
 
         return $repos;
+    }
+
+    /**
+     * Craft plugin source repos themselves declare type=craft-plugin in their
+     * own composer.json. They aren't site projects to update — skip them.
+     */
+    private static function isCraftPluginRepo(string $dir): bool
+    {
+        $composerJson = $dir . '/composer.json';
+        if (! is_file($composerJson)) {
+            return false;
+        }
+
+        $content = @file_get_contents($composerJson);
+        if ($content === false) {
+            return false;
+        }
+
+        $data = json_decode($content, true);
+        if (! is_array($data)) {
+            return false;
+        }
+
+        return ($data['type'] ?? null) === 'craft-plugin';
     }
 
     private static function isDirectDep(string $repoPath, string $package): bool
