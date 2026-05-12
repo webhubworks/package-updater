@@ -12,7 +12,8 @@ class UpdateSingleCommand extends Command
         {package}
         {--with-all-dependencies}
         {--update-package=}
-        {--stop-ddev}';
+        {--stop-ddev}
+        {--craft-handle=}';
 
     protected $description = 'Internal: update a single repo and emit JSON result on stdout';
 
@@ -21,6 +22,7 @@ class UpdateSingleCommand extends Command
     public function handle(): int
     {
         $updatePackage = $this->option('update-package');
+        $craftHandle = $this->option('craft-handle');
 
         $result = UpdateRepoAction::update(
             $this->argument('repoPath'),
@@ -29,6 +31,7 @@ class UpdateSingleCommand extends Command
             (bool) $this->option('with-all-dependencies'),
             is_string($updatePackage) && $updatePackage !== '' ? $updatePackage : null,
             ! $this->option('stop-ddev'),
+            is_string($craftHandle) && $craftHandle !== '' ? $craftHandle : null,
         );
 
         $this->output->writeln(json_encode($result->toArray()));

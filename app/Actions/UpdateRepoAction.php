@@ -21,6 +21,9 @@ final class UpdateRepoAction
      *                                      package when its constraint blocks $package from
      *                                      reaching the desired version.
      * @param  bool  $withAllDependencies  Pass -W to composer.
+     * @param  string|null  $craftHandle   When set, the update step runs `ddev craft update <handle>`
+     *                                     instead of `ddev composer update`. $package is still used
+     *                                     to track the locked version before/after.
      */
     public static function update(
         string $repoPath,
@@ -29,10 +32,11 @@ final class UpdateRepoAction
         bool $withAllDependencies = false,
         ?string $updatePackage = null,
         bool $keepDdevRunning = true,
+        ?string $craftHandle = null,
     ): RepoUpdateResult {
         $updatePackage = $updatePackage ?? $package;
 
-        if ($updatePackage !== $package && self::lockedVersion($repoPath, $updatePackage) === null) {
+        if ($craftHandle === null && $updatePackage !== $package && self::lockedVersion($repoPath, $updatePackage) === null) {
             return RepoUpdateResult::skipped(
                 $repoPath,
                 "{$updatePackage} not present in composer.lock",
@@ -80,20 +84,22 @@ final class UpdateRepoAction
 
         $previousVersion = self::lockedVersion($repoPath, $package);
 
-        $composerArgs = ['ddev', 'composer', 'update', $updatePackage, '--no-audit'];
-        if ($withAllDependencies) {
-            $composerArgs[] = '-W';
+        if ($craftHandle !== null) {
+            $updateArgs = ['ddev', 'craft', 'update', $craftHandle];
+            $updateLabel = 'ddev craft update ' . $craftHandle;
+            $failStep = 'ddev craft update';
+        } else {
+            $updateArgs = ['ddev', 'composer', 'update', $updatePackage, '--no-audit'];
+            if ($withAllDependencies) {
+                $updateArgs[] = '-W';
+            }
+            $updateLabel = 'ddev composer update ' . $updatePackage . ($withAllDependencies ? ' -W' : '');
+            $failStep = 'ddev composer update';
         }
 
-        $update = self::run(
-            $composerArgs,
-            $repoPath,
-            1800,
-            $onProgress,
-            'ddev composer update ' . $updatePackage . ($withAllDependencies ? ' -W' : ''),
-        );
+        $update = self::run($updateArgs, $repoPath, 1800, $onProgress, $updateLabel);
         if (! $update->isSuccessful()) {
-            return self::fail($repoPath, $branch, 'ddev composer update', $update);
+            return self::fail($repoPath, $branch, $failStep, $update);
         }
 
         $prepRan = false;

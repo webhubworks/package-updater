@@ -183,9 +183,32 @@ class UpdateCommand extends Command
             $this->ensureDdevSshAuth();
         }
 
+        $updater = fn (string $repo, callable $onProgress) => UpdateRepoAction::update(
+            $repo,
+            $package,
+            $onProgress,
+            $withAllDependencies,
+            $updatePackage,
+            $keepDdevRunning,
+        );
+
+        $buildCmd = function (string $repo, string $php, string $binary) use ($package, $withAllDependencies, $updatePackage, $keepDdevRunning): array {
+            $cmd = [$php, $binary, 'update:single', $repo, $package];
+            if ($withAllDependencies) {
+                $cmd[] = '--with-all-dependencies';
+            }
+            if ($updatePackage !== $package) {
+                $cmd[] = '--update-package=' . $updatePackage;
+            }
+            if (! $keepDdevRunning) {
+                $cmd[] = '--stop-ddev';
+            }
+            return $cmd;
+        };
+
         $results = $parallel === 1
-            ? $this->runSequential($repos, $package, $withAllDependencies, $updatePackage, $keepDdevRunning)
-            : $this->runParallel($repos, $package, $parallel, $withAllDependencies, $updatePackage, $keepDdevRunning);
+            ? $this->runSequential($repos, $updater)
+            : $this->runParallel($repos, $parallel, $buildCmd);
 
         $this->printSummary(array_merge($preSkipped, $results), $targetVersion);
 
@@ -213,7 +236,7 @@ class UpdateCommand extends Command
         );
     }
 
-    private function promptLimit(int $available): ?int
+    protected function promptLimit(int $available): ?int
     {
         if ($this->option('yes')) {
             return null;
@@ -238,7 +261,7 @@ class UpdateCommand extends Command
         return $value === '' ? null : (int) $value;
     }
 
-    private function resolveTargetVersion(): ?string
+    protected function resolveTargetVersion(): ?string
     {
         $option = $this->option('target-version');
         if ($option !== null && $option !== '') {
@@ -313,14 +336,14 @@ class UpdateCommand extends Command
         return trim($value);
     }
 
-    private static function versionsEqual(string $a, string $b): bool
+    protected static function versionsEqual(string $a, string $b): bool
     {
         $normalize = static fn (string $v) => ltrim(trim($v), 'vV');
 
         return $normalize($a) === $normalize($b);
     }
 
-    private function resolveKeepDdevRunning(): bool
+    protected function resolveKeepDdevRunning(): bool
     {
         if ($this->option('stop-ddev')) {
             return false;
@@ -337,7 +360,7 @@ class UpdateCommand extends Command
         );
     }
 
-    private function resolveParallel(): int
+    protected function resolveParallel(): int
     {
         $option = $this->option('parallel');
         if ($option !== null) {
@@ -357,9 +380,10 @@ class UpdateCommand extends Command
 
     /**
      * @param  list<string>  $repos
+     * @param  callable(string $repoPath, callable $onProgress): RepoUpdateResult  $updater
      * @return list<RepoUpdateResult>
      */
-    private function runSequential(array $repos, string $package, bool $withAllDependencies, string $updatePackage, bool $keepDdevRunning): array
+    protected function runSequential(array $repos, callable $updater): array
     {
         $results = [];
         $total = count($repos);
@@ -369,14 +393,7 @@ class UpdateCommand extends Command
             $name = basename($repo);
             $this->line('');
             $this->line("<fg=cyan>━━ [{$n}/{$total}] {$name} ━━</>");
-            $result = UpdateRepoAction::update(
-                $repo,
-                $package,
-                $this->streamingCallback(),
-                $withAllDependencies,
-                $updatePackage,
-                $keepDdevRunning,
-            );
+            $result = $updater($repo, $this->streamingCallback());
             $results[] = $result;
             $this->printRepoLine($result, $n, $total);
         }
@@ -386,9 +403,10 @@ class UpdateCommand extends Command
 
     /**
      * @param  list<string>  $repos
+     * @param  callable(string $repoPath, string $php, string $binary): list<string>  $buildCmd
      * @return list<RepoUpdateResult>
      */
-    private function runParallel(array $repos, string $package, int $workers, bool $withAllDependencies, string $updatePackage, bool $keepDdevRunning): array
+    protected function runParallel(array $repos, int $workers, callable $buildCmd): array
     {
         $php = (new PhpExecutableFinder())->find() ?: PHP_BINARY;
         $binary = base_path('package-updater');
@@ -406,16 +424,7 @@ class UpdateCommand extends Command
         while (! empty($queue) || ! empty($running)) {
             while (count($running) < $workers && ! empty($queue)) {
                 $repo = array_shift($queue);
-                $cmd = [$php, $binary, 'update:single', $repo, $package];
-                if ($withAllDependencies) {
-                    $cmd[] = '--with-all-dependencies';
-                }
-                if ($updatePackage !== $package) {
-                    $cmd[] = '--update-package=' . $updatePackage;
-                }
-                if (! $keepDdevRunning) {
-                    $cmd[] = '--stop-ddev';
-                }
+                $cmd = $buildCmd($repo, $php, $binary);
                 $process = new Process($cmd);
                 $process->setTimeout(3600);
                 $process->start();
@@ -475,7 +484,7 @@ class UpdateCommand extends Command
     }
 
     /** @param array{repo: string, index: int, started: float} $entry */
-    private function formatRunningLine(array $entry, string $spinnerFrame, int $total): string
+    protected function formatRunningLine(array $entry, string $spinnerFrame, int $total): string
     {
         $elapsed = (int) round(microtime(true) - $entry['started']);
         $name = basename($entry['repo']);
@@ -490,7 +499,7 @@ class UpdateCommand extends Command
         );
     }
 
-    private function getConsoleOutput(): ?ConsoleOutputInterface
+    protected function getConsoleOutput(): ?ConsoleOutputInterface
     {
         $output = $this->output;
         if (! $output instanceof OutputStyle) {
@@ -502,7 +511,7 @@ class UpdateCommand extends Command
         return $inner instanceof ConsoleOutputInterface ? $inner : null;
     }
 
-    private function ensureDdevSshAuth(): void
+    protected function ensureDdevSshAuth(): void
     {
         $process = new Process(['ddev', 'auth', 'ssh']);
         $process->setTimeout(120);
@@ -529,7 +538,7 @@ class UpdateCommand extends Command
             : 'ddev SSH agent ready.');
     }
 
-    private function streamingCallback(): \Closure
+    protected function streamingCallback(): \Closure
     {
         return function (string $event, ?string $type, ?string $payload): void {
             if ($event === 'step-start') {
@@ -548,7 +557,7 @@ class UpdateCommand extends Command
         };
     }
 
-    private function parseChildOutput(string $output, string $repo): RepoUpdateResult
+    protected function parseChildOutput(string $output, string $repo): RepoUpdateResult
     {
         $lines = array_filter(array_map('trim', explode("\n", $output)));
         foreach (array_reverse($lines) as $line) {
@@ -561,12 +570,12 @@ class UpdateCommand extends Command
         return RepoUpdateResult::failed($repo, 'child process produced no parsable result');
     }
 
-    private function printRepoLine(RepoUpdateResult $result, int $done, int $total): void
+    protected function printRepoLine(RepoUpdateResult $result, int $done, int $total): void
     {
         $this->line($this->formatRepoLine($result, $done, $total));
     }
 
-    private function formatRepoLine(RepoUpdateResult $result, int $index, int $total, ?float $elapsedSeconds = null): string
+    protected function formatRepoLine(RepoUpdateResult $result, int $index, int $total, ?float $elapsedSeconds = null): string
     {
         $name = basename($result->repoPath);
         [$icon, $color] = match ($result->status) {
@@ -589,7 +598,7 @@ class UpdateCommand extends Command
     }
 
     /** @param  list<RepoUpdateResult>  $results */
-    private function printSummary(array $results, ?string $targetVersion = null): void
+    protected function printSummary(array $results, ?string $targetVersion = null): void
     {
         $success = array_values(array_filter($results, fn ($r) => $r->status === 'success'));
         $skipped = array_values(array_filter($results, fn ($r) => $r->status === 'skipped'));

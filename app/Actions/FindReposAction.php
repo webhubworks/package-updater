@@ -87,7 +87,7 @@ final class FindReposAction
      *
      * @return list<string>
      */
-    private static function collectRepoDirs(string $reposDir, int $maxDepth = 4): array
+    public static function collectRepoDirs(string $reposDir, int $maxDepth = 4): array
     {
         $skip = ['vendor', 'node_modules', '.git', '.idea', '.vscode'];
         $repos = [];
