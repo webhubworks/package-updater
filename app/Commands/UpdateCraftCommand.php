@@ -61,18 +61,16 @@ class UpdateCraftCommand extends UpdateCommand
         $totalFound = count($matches);
         info(sprintf('Found %d repositor%s.', $totalFound, $totalFound === 1 ? 'y' : 'ies'));
 
-        $cliLimit = $this->option('limit');
-        if ($cliLimit !== null && $cliLimit !== '') {
-            $cliLimit = max(1, (int) $cliLimit);
-            if ($cliLimit < count($matches)) {
-                $matches = array_slice($matches, 0, $cliLimit);
-            }
-        }
+        $cliLimitRaw = $this->option('limit');
+        $cliLimit = ($cliLimitRaw !== null && $cliLimitRaw !== '') ? max(1, (int) $cliLimitRaw) : null;
 
         if ($this->option('dry-run')) {
+            $preview = $cliLimit !== null && $cliLimit < count($matches)
+                ? array_slice($matches, 0, $cliLimit)
+                : $matches;
             table(
                 ['Repo', 'Package', 'Locked version'],
-                array_map(fn ($m) => [basename($m['path']), $m['package'], $m['version']], $matches),
+                array_map(fn ($m) => [basename($m['path']), $m['package'], $m['version']], $preview),
             );
             note('Dry run — no changes were made. Note: versions reflect each repo\'s current local composer.lock and may be stale.');
             return self::SUCCESS;
@@ -89,14 +87,19 @@ class UpdateCraftCommand extends UpdateCommand
         $parallel = $this->resolveParallel();
 
         $promptedLimit = null;
-        if ($cliLimit === null || $cliLimit === '') {
+        if ($cliLimit !== null) {
+            if ($cliLimit < count($matches)) {
+                $matches = array_slice($matches, 0, $cliLimit);
+                info("Limiting to first {$cliLimit} repositor" . ($cliLimit === 1 ? 'y' : 'ies') . '.');
+            }
+        } else {
             $promptedLimit = $this->promptLimit(count($matches));
             if ($promptedLimit !== null && $promptedLimit < count($matches)) {
                 $matches = array_slice($matches, 0, $promptedLimit);
                 info("Limiting to first {$promptedLimit} repositor" . ($promptedLimit === 1 ? 'y' : 'ies') . '.');
             }
         }
-        $effectiveLimit = is_int($cliLimit) ? $cliLimit : $promptedLimit;
+        $effectiveLimit = $cliLimit ?? $promptedLimit;
 
         $keepDdevRunning = $this->resolveKeepDdevRunning();
 
