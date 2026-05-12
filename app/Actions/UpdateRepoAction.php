@@ -402,9 +402,18 @@ final class UpdateRepoAction
 
         if ($stream && $onProgress !== null && $label !== '') {
             $onProgress('step-start', null, $label);
-            $process->run(function (string $type, string $buffer) use ($onProgress, $label): void {
+            $sudoDetected = false;
+            $process->run(function (string $type, string $buffer) use ($onProgress, $label, $process, &$sudoDetected): void {
                 self::transcriptAppend($type === Process::ERR ? "[stderr] {$buffer}" : $buffer);
                 $onProgress($label, $type === Process::ERR ? 'err' : 'out', $buffer);
+
+                if (! $sudoDetected && self::isSudoPrompt($buffer)) {
+                    $sudoDetected = true;
+                    // Kill ddev fast so the sudo prompt doesn't hang the run.
+                    // The killed process surfaces as a failure; hintFor() turns
+                    // the trigger phrase in the output into a user-facing hint.
+                    @$process->stop(0.5);
+                }
             });
         } else {
             $process->run();
@@ -417,6 +426,12 @@ final class UpdateRepoAction
         self::transcriptExit($process->getExitCode());
 
         return $process;
+    }
+
+    private static function isSudoPrompt(string $chunk): bool
+    {
+        return stripos($chunk, 'needs to run with administrative privileges') !== false
+            || stripos($chunk, 'may need to enter your password for sudo') !== false;
     }
 
     /** @var resource|null */
@@ -501,6 +516,12 @@ final class UpdateRepoAction
         $combined = $process->getOutput() . "\n" . $process->getErrorOutput();
 
         $hints = [
+            'needs to run with administrative privileges'
+                => 'ddev needs sudo to add a hostname to /etc/hosts. Run `ddev start` manually in this repo once to enter your password, then re-run `package-updater retry`.',
+
+            'may need to enter your password for sudo'
+                => 'ddev needs sudo to add a hostname to /etc/hosts. Run `ddev start` manually in this repo once to enter your password, then re-run `package-updater retry`.',
+
             'configured database type does not match the current actual database'
                 => 'database type mismatch — run `ddev delete --omit-snapshot` then `ddev restart` in this repo',
 
