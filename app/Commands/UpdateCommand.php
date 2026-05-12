@@ -770,6 +770,28 @@ class UpdateCommand extends Command
             }
         }
 
+        $crawler5xx = array_values(array_filter(
+            $success,
+            fn (RepoUpdateResult $r) => ! empty($r->crawlerServerErrorUrls),
+        ));
+        if (! empty($crawler5xx)) {
+            warning(sprintf(
+                '%d repo(s) returned 5xx responses during site-crawler — investigate:',
+                count($crawler5xx),
+            ));
+            foreach ($crawler5xx as $r) {
+                $name = basename($r->repoPath);
+                $count = count($r->crawlerServerErrorUrls);
+                $this->line("  <fg=red;options=bold>✗ {$name}</> — {$count} URL(s) returned 5xx");
+                foreach ($r->crawlerServerErrorUrls as $url) {
+                    $this->line("    <fg=red>{$url}</>");
+                }
+                if ($r->crawlerLogPath !== null) {
+                    $this->line("    <fg=gray>log:</> {$r->crawlerLogPath}");
+                }
+            }
+        }
+
         if (! empty($skipped)) {
             note('Skipped repos:');
             table(

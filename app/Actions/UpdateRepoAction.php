@@ -144,12 +144,19 @@ final class UpdateRepoAction
         $crawlerRan = false;
         $crawlerFailed = false;
         $crawlerLogPath = null;
+        $crawlerServerErrorUrls = [];
 
         if ($crawlerCommandLine !== null && $crawlerCommandLine !== '') {
             $crawlerRan = true;
             $crawler = self::run($crawlerCommandLine, $repoPath, 3600, $onProgress, $crawlerCommandLine);
+
+            $crawlerCombined = $crawler->getOutput() . "\n" . $crawler->getErrorOutput();
+            $crawlerServerErrorUrls = self::parseCrawlerServerErrors($crawlerCombined);
+
             if (! $crawler->isSuccessful()) {
                 $crawlerFailed = true;
+            }
+            if ($crawlerFailed || ! empty($crawlerServerErrorUrls)) {
                 $crawlerLogPath = self::writeLog($repoPath, 'site-crawler', $crawler);
             }
         }
@@ -177,6 +184,7 @@ final class UpdateRepoAction
             $crawlerRan,
             $crawlerFailed,
             $crawlerLogPath,
+            $crawlerServerErrorUrls,
         );
     }
 
@@ -239,6 +247,54 @@ final class UpdateRepoAction
         }
 
         return null;
+    }
+
+    /**
+     * Scan site-crawler output for the "Failed requests" table and return
+     * the URLs whose status is 5xx (server errors). The crawler typically
+     * exits 0 even when individual requests fail, so this is how we detect
+     * regressions that the user needs to investigate.
+     *
+     * @return list<string>
+     */
+    public static function parseCrawlerServerErrors(string $output): array
+    {
+        $stripped = preg_replace('/\x1b\[[0-9;]*[A-Za-z]/', '', $output) ?? $output;
+        $lines = preg_split("/\r\n|\r|\n/", $stripped) ?: [];
+
+        $urls = [];
+        $inFailedTable = false;
+
+        foreach ($lines as $line) {
+            $trimmed = trim($line);
+
+            if (preg_match('/^Failed requests:\s*$/i', $trimmed)) {
+                $inFailedTable = true;
+                continue;
+            }
+            if (! $inFailedTable) {
+                continue;
+            }
+
+            // Borders / blanks: stay in the table mode but ignore the line.
+            if ($trimmed === '' || ! str_starts_with($trimmed, '|')) {
+                continue;
+            }
+
+            $cols = array_map('trim', explode('|', trim($trimmed, '|')));
+            if (count($cols) < 2) {
+                continue;
+            }
+            [$url, $status] = [$cols[0], $cols[1]];
+            if (strcasecmp($status, 'Status') === 0) {
+                continue;
+            }
+            if (preg_match('/^5\d\d$/', $status)) {
+                $urls[] = $url;
+            }
+        }
+
+        return $urls;
     }
 
     private static function lockedVersion(string $repoPath, string $package): ?string

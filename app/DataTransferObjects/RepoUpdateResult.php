@@ -20,6 +20,8 @@ final readonly class RepoUpdateResult
         public bool $crawlerRan = false,
         public bool $crawlerFailed = false,
         public ?string $crawlerLogPath = null,
+        /** @var list<string> */
+        public array $crawlerServerErrorUrls = [],
     ) {}
 
     public static function success(
@@ -35,6 +37,7 @@ final readonly class RepoUpdateResult
         bool $crawlerRan = false,
         bool $crawlerFailed = false,
         ?string $crawlerLogPath = null,
+        array $crawlerServerErrorUrls = [],
     ): self {
         return new self(
             repoPath: $path,
@@ -51,6 +54,7 @@ final readonly class RepoUpdateResult
             crawlerRan: $crawlerRan,
             crawlerFailed: $crawlerFailed,
             crawlerLogPath: $crawlerLogPath,
+            crawlerServerErrorUrls: $crawlerServerErrorUrls,
         );
     }
 
@@ -89,6 +93,7 @@ final readonly class RepoUpdateResult
             'crawlerRan' => $this->crawlerRan,
             'crawlerFailed' => $this->crawlerFailed,
             'crawlerLogPath' => $this->crawlerLogPath,
+            'crawlerServerErrorUrls' => $this->crawlerServerErrorUrls,
         ];
     }
 
@@ -111,6 +116,7 @@ final readonly class RepoUpdateResult
             crawlerRan: $data['crawlerRan'] ?? false,
             crawlerFailed: $data['crawlerFailed'] ?? false,
             crawlerLogPath: $data['crawlerLogPath'] ?? null,
+            crawlerServerErrorUrls: is_array($data['crawlerServerErrorUrls'] ?? null) ? array_values($data['crawlerServerErrorUrls']) : [],
         );
     }
 }
