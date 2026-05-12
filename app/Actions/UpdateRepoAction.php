@@ -533,14 +533,14 @@ final class UpdateRepoAction
     private static function fail(string $repoPath, ?string $branch, string $step, Process $process): RepoUpdateResult
     {
         $logPath = self::writeLog($repoPath, $step, $process);
-        $excerpt = self::extractError($process);
-
-        $message = "{$step} failed: {$excerpt}";
-
         $hint = self::hintFor($process);
-        if ($hint !== null) {
-            $message .= " — hint: {$hint}";
-        }
+
+        // When we have a hint, it already explains the failure cleanly — show
+        // that instead of the raw upstream output excerpt. The full excerpt
+        // remains in the log file for anyone who wants the gory details.
+        $message = $hint !== null
+            ? "{$step} failed: {$hint}"
+            : "{$step} failed: " . self::extractError($process);
 
         if ($logPath !== null) {
             $message .= " (log: {$logPath})";
