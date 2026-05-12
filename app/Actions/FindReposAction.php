@@ -94,7 +94,7 @@ final class FindReposAction
 
         $walk = function (string $dir, int $depth) use (&$walk, &$repos, $skip, $maxDepth): void {
             if (is_file($dir . '/composer.lock')) {
-                if (! self::isCraftPluginRepo($dir)) {
+                if (file_exists($dir . '/.git') && ! self::isCraftPluginRepo($dir)) {
                     $repos[] = $dir;
                 }
 
