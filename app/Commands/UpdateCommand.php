@@ -3,6 +3,7 @@
 namespace App\Commands;
 
 use App\Actions\FindReposAction;
+use App\Actions\LastRunStore;
 use App\Actions\UpdateRepoAction;
 use App\DataTransferObjects\RepoUpdateResult;
 use Illuminate\Console\OutputStyle;
@@ -161,6 +162,7 @@ class UpdateCommand extends Command
         $withAllDependencies = $this->resolveWithAllDependencies($updatePackage, $package);
         $parallel = $this->resolveParallel();
 
+        $promptedLimit = null;
         if ($cliLimit === null || $cliLimit === '') {
             $promptedLimit = $this->promptLimit(count($matches));
             if ($promptedLimit !== null && $promptedLimit < count($matches)) {
@@ -168,6 +170,7 @@ class UpdateCommand extends Command
                 info("Limiting to first {$promptedLimit} repositor" . ($promptedLimit === 1 ? 'y' : 'ies') . '.');
             }
         }
+        $effectiveLimit = is_int($cliLimit) ? $cliLimit : $promptedLimit;
 
         $keepDdevRunning = $this->resolveKeepDdevRunning();
 
@@ -178,6 +181,18 @@ class UpdateCommand extends Command
         if (! $this->option('yes') && ! confirm("Run `{$composerCmd}` in " . count($repos) . " repos {$mode}?", default: true)) {
             return self::SUCCESS;
         }
+
+        LastRunStore::save('update', ['package' => $package], [
+            'reps-dir' => $reposDir,
+            'parallel' => (string) $parallel,
+            'target-version' => $targetVersion,
+            'update-package' => $updatePackage !== $package ? $updatePackage : null,
+            'with-all-dependencies' => $withAllDependencies,
+            'limit' => $effectiveLimit !== null ? (string) $effectiveLimit : null,
+            'stop-ddev' => ! $keepDdevRunning,
+            'no-ssh-auth' => (bool) $this->option('no-ssh-auth'),
+            'yes' => true,
+        ]);
 
         if (! $this->option('no-ssh-auth')) {
             $this->ensureDdevSshAuth();
@@ -365,6 +380,10 @@ class UpdateCommand extends Command
         $option = $this->option('parallel');
         if ($option !== null) {
             return max(1, (int) $option);
+        }
+
+        if ($this->option('yes')) {
+            return 1;
         }
 
         $value = text(

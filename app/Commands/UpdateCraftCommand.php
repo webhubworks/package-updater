@@ -3,6 +3,7 @@
 namespace App\Commands;
 
 use App\Actions\FindCraftReposAction;
+use App\Actions\LastRunStore;
 use App\Actions\UpdateRepoAction;
 use App\DataTransferObjects\RepoUpdateResult;
 
@@ -23,6 +24,7 @@ class UpdateCraftCommand extends UpdateCommand
         {--no-ssh-auth : Skip the initial `ddev auth ssh` step}
         {--target-version= : Skip repos already at this version of the matched package}
         {--stop-ddev : Stop the ddev project in each repo after a successful update (default: keep running)}
+        {--craft-command= : Full shell command to run in each repo (skips the editable-command prompt). Defaults to `ddev craft update <handle> --interactive=0 --with-expired --minor-only --backup=1`.}
         {--yes : Skip the confirmation prompt}';
 
     protected $description = 'Run `ddev craft update <handle>` across local repos containing the given Craft plugin (or Craft itself)';
@@ -110,6 +112,7 @@ class UpdateCraftCommand extends UpdateCommand
 
         $parallel = $this->resolveParallel();
 
+        $promptedLimit = null;
         if ($cliLimit === null || $cliLimit === '') {
             $promptedLimit = $this->promptLimit(count($matches));
             if ($promptedLimit !== null && $promptedLimit < count($matches)) {
@@ -117,13 +120,17 @@ class UpdateCraftCommand extends UpdateCommand
                 info("Limiting to first {$promptedLimit} repositor" . ($promptedLimit === 1 ? 'y' : 'ies') . '.');
             }
         }
+        $effectiveLimit = is_int($cliLimit) ? $cliLimit : $promptedLimit;
 
         $keepDdevRunning = $this->resolveKeepDdevRunning();
 
         $mode = $parallel === 1 ? 'sequentially' : "with {$parallel} workers in parallel";
         $defaultCommand = "ddev craft update {$handle} --interactive=0 --with-expired --minor-only --backup=1";
 
-        if ($this->option('yes')) {
+        $craftOption = $this->option('craft-command');
+        if (is_string($craftOption) && $craftOption !== '') {
+            $craftCommandLine = trim($craftOption);
+        } elseif ($this->option('yes')) {
             $craftCommandLine = $defaultCommand;
         } else {
             note(sprintf('Will run in %d repo(s) %s.', count($matches), $mode));
@@ -137,6 +144,17 @@ class UpdateCraftCommand extends UpdateCommand
                 return self::SUCCESS;
             }
         }
+
+        LastRunStore::save('update:craft', ['handle' => $handle], [
+            'reps-dir' => $reposDir,
+            'parallel' => (string) $parallel,
+            'target-version' => $targetVersion,
+            'limit' => $effectiveLimit !== null ? (string) $effectiveLimit : null,
+            'stop-ddev' => ! $keepDdevRunning,
+            'no-ssh-auth' => (bool) $this->option('no-ssh-auth'),
+            'craft-command' => $craftCommandLine,
+            'yes' => true,
+        ]);
 
         if (! $this->option('no-ssh-auth')) {
             $this->ensureDdevSshAuth();

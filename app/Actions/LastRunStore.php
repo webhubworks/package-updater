@@ -1,0 +1,64 @@
+<?php
+
+namespace App\Actions;
+
+final class LastRunStore
+{
+    /**
+     * Persist the resolved command name + arguments + options so that the
+     * `retry` command can replay it non-interactively.
+     *
+     * @param  array<string, scalar|null>  $arguments
+     * @param  array<string, scalar|bool|null>  $options
+     */
+    public static function save(string $command, array $arguments, array $options): void
+    {
+        $path = self::path();
+        $dir = dirname($path);
+        if (! is_dir($dir) && ! @mkdir($dir, 0755, true) && ! is_dir($dir)) {
+            return;
+        }
+
+        $payload = [
+            'command' => $command,
+            'arguments' => $arguments,
+            'options' => $options,
+            'timestamp' => date('c'),
+        ];
+
+        @file_put_contents($path, json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+    }
+
+    /**
+     * @return array{command: string, arguments: array<string, mixed>, options: array<string, mixed>, timestamp: ?string}|null
+     */
+    public static function load(): ?array
+    {
+        $path = self::path();
+        if (! is_file($path)) {
+            return null;
+        }
+
+        $content = @file_get_contents($path);
+        if ($content === false) {
+            return null;
+        }
+
+        $data = json_decode($content, true);
+        if (! is_array($data) || ! isset($data['command']) || ! is_string($data['command'])) {
+            return null;
+        }
+
+        return [
+            'command' => $data['command'],
+            'arguments' => is_array($data['arguments'] ?? null) ? $data['arguments'] : [],
+            'options' => is_array($data['options'] ?? null) ? $data['options'] : [],
+            'timestamp' => is_string($data['timestamp'] ?? null) ? $data['timestamp'] : null,
+        ];
+    }
+
+    public static function path(): string
+    {
+        return base_path('logs/last-run.json');
+    }
+}
