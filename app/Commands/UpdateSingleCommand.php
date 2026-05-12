@@ -14,7 +14,7 @@ class UpdateSingleCommand extends Command
         {--update-package=}
         {--stop-ddev}
         {--craft-command=}
-        {--run-crawler}';
+        {--crawler-command=}';
 
     protected $description = 'Internal: update a single repo and emit JSON result on stdout';
 
@@ -24,6 +24,7 @@ class UpdateSingleCommand extends Command
     {
         $updatePackage = $this->option('update-package');
         $craftCommand = $this->option('craft-command');
+        $crawlerCommand = $this->option('crawler-command');
 
         $result = UpdateRepoAction::update(
             $this->argument('repoPath'),
@@ -33,7 +34,7 @@ class UpdateSingleCommand extends Command
             is_string($updatePackage) && $updatePackage !== '' ? $updatePackage : null,
             ! $this->option('stop-ddev'),
             is_string($craftCommand) && $craftCommand !== '' ? $craftCommand : null,
-            (bool) $this->option('run-crawler'),
+            is_string($crawlerCommand) && $crawlerCommand !== '' ? $crawlerCommand : null,
         );
 
         $this->output->writeln(json_encode($result->toArray()));

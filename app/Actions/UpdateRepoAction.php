@@ -25,9 +25,10 @@ final class UpdateRepoAction
      *                                          (e.g. `ddev craft update commerce --interactive=0`)
      *                                          instead of `ddev composer update`. $package is still
      *                                          used to track the locked version before/after.
-     * @param  bool  $runCrawler  When true, runs `site-crawler crawl:ddev` from the repo after
-     *                            `composer prep`. A crawler failure does NOT mark the repo as
-     *                            failed; it surfaces via the crawlerFailed/crawlerLogPath fields.
+     * @param  string|null  $crawlerCommandLine  When non-null, runs this shell command from the
+     *                                            repo after `composer prep`. A crawler failure
+     *                                            does NOT mark the repo as failed; it surfaces
+     *                                            via the crawlerFailed/crawlerLogPath fields.
      */
     public static function update(
         string $repoPath,
@@ -37,7 +38,7 @@ final class UpdateRepoAction
         ?string $updatePackage = null,
         bool $keepDdevRunning = true,
         ?string $craftCommandLine = null,
-        bool $runCrawler = false,
+        ?string $crawlerCommandLine = null,
     ): RepoUpdateResult {
         $updatePackage = $updatePackage ?? $package;
 
@@ -144,18 +145,12 @@ final class UpdateRepoAction
         $crawlerFailed = false;
         $crawlerLogPath = null;
 
-        if ($runCrawler) {
+        if ($crawlerCommandLine !== null && $crawlerCommandLine !== '') {
             $crawlerRan = true;
-            $crawler = self::run(
-                ['site-crawler', 'crawl:ddev', '--exclude=assets,variant,index.php,downloads,actions,.pdf'],
-                $repoPath,
-                3600,
-                $onProgress,
-                'site-crawler crawl:ddev',
-            );
+            $crawler = self::run($crawlerCommandLine, $repoPath, 3600, $onProgress, $crawlerCommandLine);
             if (! $crawler->isSuccessful()) {
                 $crawlerFailed = true;
-                $crawlerLogPath = self::writeLog($repoPath, 'site-crawler-crawl-ddev', $crawler);
+                $crawlerLogPath = self::writeLog($repoPath, 'site-crawler', $crawler);
             }
         }
 

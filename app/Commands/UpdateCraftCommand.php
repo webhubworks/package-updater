@@ -25,8 +25,9 @@ class UpdateCraftCommand extends UpdateCommand
         {--target-version= : Skip repos already at this version of the matched package}
         {--stop-ddev : Stop the ddev project in each repo after a successful update (default: keep running)}
         {--craft-command= : Full shell command to run in each repo (skips the editable-command prompt). Defaults to `ddev craft update <handle> --interactive=0 --with-expired --minor-only --backup=1`.}
-        {--crawl-repo=* : After composer prep, run `site-crawler crawl:ddev` only in these repo path(s). Skips the interactive crawler-selection prompt.}
+        {--crawl-repo=* : After composer prep, run the site-crawler only in these repo path(s). Skips the interactive crawler-selection prompt.}
         {--no-crawl : Skip the site-crawler step entirely.}
+        {--crawler-command= : Full shell command to run as the crawler (skips the editable-command prompt). Defaults to `site-crawler crawl:ddev --exclude="assets,variant,index.php,downloads,actions,.pdf"`.}
         {--yes : Skip the confirmation prompt}';
 
     protected $description = 'Run `ddev craft update <handle>` across local repos containing the given Craft plugin (or Craft itself)';
@@ -113,6 +114,11 @@ class UpdateCraftCommand extends UpdateCommand
             }
         }
 
+        $crawlerCommandLine = ! empty($crawlPaths) ? $this->resolveCrawlerCommand() : null;
+        if ($crawlerCommandLine === '') {
+            $crawlerCommandLine = null;
+        }
+
         LastRunStore::save('update:craft', ['handle' => $handle], [
             'reps-dir' => $reposDir,
             'parallel' => (string) $parallel,
@@ -123,6 +129,7 @@ class UpdateCraftCommand extends UpdateCommand
             'craft-command' => $craftCommandLine,
             'crawl-repo' => $crawlPaths,
             'no-crawl' => empty($crawlPaths),
+            'crawler-command' => $crawlerCommandLine,
             'yes' => true,
         ]);
 
@@ -141,16 +148,16 @@ class UpdateCraftCommand extends UpdateCommand
             onProgress: $onProgress,
             keepDdevRunning: $keepDdevRunning,
             craftCommandLine: $craftCommandLine,
-            runCrawler: isset($crawlSet[$repo]),
+            crawlerCommandLine: isset($crawlSet[$repo]) ? $crawlerCommandLine : null,
         );
 
-        $buildCmd = function (string $repo, string $php, string $binary) use ($packagesByPath, $craftCommandLine, $keepDdevRunning, $crawlSet): array {
+        $buildCmd = function (string $repo, string $php, string $binary) use ($packagesByPath, $craftCommandLine, $keepDdevRunning, $crawlSet, $crawlerCommandLine): array {
             $cmd = [$php, $binary, 'update:single', $repo, $packagesByPath[$repo], '--craft-command=' . $craftCommandLine];
             if (! $keepDdevRunning) {
                 $cmd[] = '--stop-ddev';
             }
-            if (isset($crawlSet[$repo])) {
-                $cmd[] = '--run-crawler';
+            if (isset($crawlSet[$repo]) && $crawlerCommandLine !== null) {
+                $cmd[] = '--crawler-command=' . $crawlerCommandLine;
             }
             return $cmd;
         };
@@ -211,5 +218,33 @@ class UpdateCraftCommand extends UpdateCommand
         );
 
         return array_values(array_map('strval', (array) $selected));
+    }
+
+    /**
+     * Resolve the crawler shell command line. Only invoked when at least one
+     * repo is in the crawl set. Precedence:
+     *   1. --crawler-command=...  (uses that value)
+     *   2. --yes                   (uses the built-in default)
+     *   3. text() prompt           (default pre-filled, fully editable)
+     */
+    protected function resolveCrawlerCommand(): string
+    {
+        $default = 'site-crawler crawl:ddev --exclude="assets,variant,index.php,downloads,actions,.pdf"';
+
+        $cli = $this->option('crawler-command');
+        if (is_string($cli) && $cli !== '') {
+            return trim($cli);
+        }
+
+        if ($this->option('yes')) {
+            return $default;
+        }
+
+        return trim((string) text(
+            label: 'Do you want to run this site-crawler command for the selected repo(s)?',
+            default: $default,
+            required: true,
+            hint: 'Edit if needed, then press Enter to run it after composer prep.',
+        ));
     }
 }
