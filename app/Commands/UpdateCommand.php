@@ -7,7 +7,7 @@ use Symfony\Component\Process\Process;
 
 use function Laravel\Prompts\confirm;
 use function Laravel\Prompts\info;
-use function Laravel\Prompts\note;
+use function Laravel\Prompts\spin;
 use function Laravel\Prompts\warning;
 
 class UpdateCommand extends Command
@@ -17,6 +17,7 @@ class UpdateCommand extends Command
         {--no-ddev : Skip ddev detection and run composer on the host}
         {--commit : Always commit the resulting changes (skip prompt)}
         {--no-commit : Never commit (skip prompt)}
+        {--show-output : Stream composer output live instead of running it under a spinner}
         {--yes : Skip the run confirmation (defaults to committing if neither --commit nor --no-commit is set)}';
 
     protected $description = 'Run composer update in the current repo, parse the package changes, and commit them';
@@ -59,16 +60,17 @@ class UpdateCommand extends Command
             return self::SUCCESS;
         }
 
-        info("Running: {$label}");
-        $update = $this->exec($cmd, $cwd, stream: true);
+        $update = $this->runComposer($cmd, $cwd, $label);
 
         if (! $update->isSuccessful()) {
-            $this->error('composer update failed (exit '.$update->getExitCode().')');
+            $this->error("composer update failed (exit {$update->getExitCode()}):");
+            $this->dumpOutput($update);
             return self::FAILURE;
         }
 
         $combined = $update->getOutput()."\n".$update->getErrorOutput();
         $updates = self::parseComposerUpdates($combined);
+        $audit = self::parseAuditSummary($combined);
 
         $this->newLine();
         if (empty($updates)) {
@@ -80,11 +82,84 @@ class UpdateCommand extends Command
             }
         }
 
+        $this->renderAudit($audit);
+
         if (! $this->shouldCommit()) {
             return self::SUCCESS;
         }
 
         return $this->commit($cwd, $updates) ? self::SUCCESS : self::FAILURE;
+    }
+
+    /** @param  list<string>  $cmd */
+    private function runComposer(array $cmd, string $cwd, string $label): Process
+    {
+        if ($this->option('show-output')) {
+            info("Running: {$label}");
+            return $this->exec($cmd, $cwd, stream: true);
+        }
+
+        return spin(
+            fn () => $this->exec($cmd, $cwd, stream: false),
+            "Running `{$label}`...",
+        );
+    }
+
+    private function dumpOutput(Process $process): void
+    {
+        $combined = trim($process->getOutput()."\n".$process->getErrorOutput());
+        foreach (preg_split("/\r\n|\r|\n/", $combined) as $line) {
+            $line = rtrim($line);
+            if ($line === '') {
+                continue;
+            }
+            $this->line("    <fg=gray>{$line}</>");
+        }
+    }
+
+    /**
+     * @param  array{state: string, vulnerabilityCount: int, abandonedCount: int, packages: list<string>}  $audit
+     */
+    private function renderAudit(array $audit): void
+    {
+        $this->newLine();
+        match ($audit['state']) {
+            'clean' => $this->line('  <fg=green>✓ Security audit: no advisories</>'),
+            'unknown' => $this->line('  <fg=gray>Security audit: no result parsed</>'),
+            default => $this->renderAuditFindings($audit),
+        };
+    }
+
+    /**
+     * @param  array{state: string, vulnerabilityCount: int, abandonedCount: int, packages: list<string>}  $audit
+     */
+    private function renderAuditFindings(array $audit): void
+    {
+        $parts = [];
+        if ($audit['vulnerabilityCount'] > 0) {
+            $parts[] = sprintf(
+                '%d security advisor%s',
+                $audit['vulnerabilityCount'],
+                $audit['vulnerabilityCount'] === 1 ? 'y' : 'ies',
+            );
+        }
+        if ($audit['abandonedCount'] > 0) {
+            $parts[] = sprintf(
+                '%d abandoned package%s',
+                $audit['abandonedCount'],
+                $audit['abandonedCount'] === 1 ? '' : 's',
+            );
+        }
+
+        $color = $audit['vulnerabilityCount'] > 0 ? 'red' : 'yellow';
+        $this->line(sprintf('  <fg=%s;options=bold>! Security audit: %s</>', $color, implode(', ', $parts)));
+
+        if (! empty($audit['packages'])) {
+            foreach ($audit['packages'] as $name) {
+                $this->line("    <fg={$color}>- {$name}</>");
+            }
+        }
+        $this->line('  <fg=gray>Run `composer audit` for details.</>');
     }
 
     private function shouldCommit(): bool
@@ -111,7 +186,7 @@ class UpdateCommand extends Command
             return true;
         }
 
-        $add = $this->exec(['git', 'add', '-A'], $cwd, stream: true);
+        $add = $this->exec(['git', 'add', '-A'], $cwd, stream: false);
         if (! $add->isSuccessful()) {
             warning('git add -A failed.');
             return false;
@@ -124,7 +199,7 @@ class UpdateCommand extends Command
         $commit = $this->exec(
             ['git', 'commit', '-m', 'Package updates', '-m', $body],
             $cwd,
-            stream: true,
+            stream: false,
         );
         if (! $commit->isSuccessful()) {
             warning('git commit failed.');
@@ -193,6 +268,69 @@ class UpdateCommand extends Command
         }
 
         return array_values($byName);
+    }
+
+    /**
+     * Parses `composer audit` output (which composer runs automatically after
+     * a successful update). Composer prints one of:
+     *
+     *   No security vulnerability advisories found.
+     *
+     *   Found N security vulnerability advisories affecting M package(s):
+     *   +-----------+--------------------------+
+     *   | Package   | symfony/http-foundation  |
+     *   ...
+     *
+     *   Found N abandoned package(s):
+     *   +-----------+-------------------+
+     *   | Package   | foo/bar           |
+     *   ...
+     *
+     * The audit can run twice in a single composer-update flow (e.g. when
+     * a post-install script like `boost:update` triggers another composer
+     * call); the parser de-dupes packages by name so the summary stays
+     * truthful.
+     *
+     * @return array{state: string, vulnerabilityCount: int, abandonedCount: int, packages: list<string>}
+     */
+    public static function parseAuditSummary(string $output): array
+    {
+        $stripped = preg_replace('/\x1b\[[0-9;]*[A-Za-z]/', '', $output) ?? $output;
+
+        $clean = preg_match('/(?:^|\n)\s*No security vulnerability advisories found\.\s*(?:\n|$)/', $stripped) === 1;
+
+        $vulnCount = 0;
+        if (preg_match('/(?:^|\n)\s*Found (\d+) security vulnerability advisor/i', $stripped, $m)) {
+            $vulnCount = (int) $m[1];
+        }
+
+        $abandonedCount = 0;
+        if (preg_match('/(?:^|\n)\s*Found (\d+) abandoned package/i', $stripped, $m)) {
+            $abandonedCount = (int) $m[1];
+        }
+
+        $packages = [];
+        if (preg_match_all('/^\s*\|\s*Package\s*\|\s*([^|]+?)\s*\|\s*$/m', $stripped, $matches)) {
+            foreach ($matches[1] as $name) {
+                $packages[] = trim($name);
+            }
+        }
+        $packages = array_values(array_unique($packages));
+
+        if ($vulnCount > 0 || $abandonedCount > 0) {
+            $state = 'findings';
+        } elseif ($clean) {
+            $state = 'clean';
+        } else {
+            $state = 'unknown';
+        }
+
+        return [
+            'state' => $state,
+            'vulnerabilityCount' => $vulnCount,
+            'abandonedCount' => $abandonedCount,
+            'packages' => $packages,
+        ];
     }
 
     /** @param  list<string>  $cmd */
