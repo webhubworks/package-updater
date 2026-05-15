@@ -16,7 +16,7 @@ final class FindCraftReposAction
      */
     public static function find(string $reposDir, string $handle): array
     {
-        $isCraft = $handle === 'craft';
+        $isCraftScope = $handle === 'craft' || $handle === 'all';
         $matches = [];
 
         foreach (FindReposAction::collectRepoDirs(rtrim($reposDir, '/')) as $dir) {
@@ -25,7 +25,7 @@ final class FindCraftReposAction
                 continue;
             }
 
-            if ($isCraft) {
+            if ($isCraftScope) {
                 $composerData = self::readJson($dir . '/composer.json');
                 if (! is_array($composerData)) {
                     continue;
@@ -45,7 +45,11 @@ final class FindCraftReposAction
                 $matches[] = [
                     'path' => $dir,
                     'version' => $version,
-                    'package' => self::CraftPackage,
+                    // For `all`, no single package is tracked — keep the
+                    // craftcms/cms version for display, but mark the package
+                    // sentinel as 'all' so the runner knows to skip per-package
+                    // before/after version lookups.
+                    'package' => $handle === 'all' ? 'all' : self::CraftPackage,
                 ];
             } else {
                 $found = self::findPluginByHandle($lockData, $handle);

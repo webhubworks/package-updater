@@ -779,12 +779,36 @@ class UpdateCommand extends Command
             table(
                 ['Repo', 'Branch', 'From', 'To', 'Tests', 'Note'],
                 array_map(function (RepoUpdateResult $r) use ($targetVersion) {
-                    $from = $r->previousVersion ?? '?';
-                    $to = $r->installedVersion ?? '?';
+                    // When the run didn't track a single package (e.g. `craft
+                    // update all`), the per-package versions are deliberately
+                    // null — show '-' instead of '?' to avoid implying a
+                    // failed lookup.
+                    $singlePackageTracked = $r->previousVersion !== null || $r->installedVersion !== null;
+                    $from = $r->previousVersion ?? ($singlePackageTracked ? '?' : '-');
+                    $to = $r->installedVersion ?? ($singlePackageTracked ? '?' : '-');
                     $note = self::successNote($r, $targetVersion);
                     return [basename($r->repoPath), $r->branch ?? '-', $from, $to, self::testsCell($r), $note];
                 }, $success),
             );
+
+            $withUpdates = array_values(array_filter(
+                $success,
+                fn (RepoUpdateResult $r) => ! empty($r->packageUpdates),
+            ));
+            if (! empty($withUpdates)) {
+                note('Package updates per repo:');
+                foreach ($withUpdates as $r) {
+                    $name = basename($r->repoPath);
+                    $count = count($r->packageUpdates);
+                    $marker = $r->committed
+                        ? '<fg=green>✓ committed</>'
+                        : '<fg=yellow>⚠ uncommitted</>';
+                    $this->line("  <options=bold>{$name}</> — {$count} update(s) · {$marker}");
+                    foreach ($r->packageUpdates as $u) {
+                        $this->line(sprintf('    - %s %s => %s', $u['name'], $u['from'], $u['to']));
+                    }
+                }
+            }
         }
 
         if ($belowTargetCount > 0) {
@@ -911,7 +935,9 @@ class UpdateCommand extends Command
             $parts[] = 'unchanged';
         }
 
-        if ($r->hasUncommittedChanges) {
+        if ($r->committed) {
+            $parts[] = sprintf('committed %d update(s)', count($r->packageUpdates));
+        } elseif ($r->hasUncommittedChanges) {
             $parts[] = 'uncommitted changes';
         }
 

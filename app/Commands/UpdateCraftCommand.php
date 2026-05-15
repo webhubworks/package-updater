@@ -6,6 +6,7 @@ use App\Actions\FindCraftReposAction;
 use App\Actions\LastRunStore;
 use App\Actions\UpdateRepoAction;
 
+use function Laravel\Prompts\confirm;
 use function Laravel\Prompts\info;
 use function Laravel\Prompts\multiselect;
 use function Laravel\Prompts\note;
@@ -16,7 +17,7 @@ use function Laravel\Prompts\warning;
 class UpdateCraftCommand extends UpdateCommand
 {
     protected $signature = 'update:craft
-        {handle? : Craft plugin handle, or "craft" to update Craft itself}
+        {handle? : Craft plugin handle, "craft" to update Craft itself, or "all" to update every Craft package}
         {--reps-dir= : Directory containing repos (default: ~/reps)}
         {--parallel= : Number of repos to update concurrently (default: prompt; 1 = sequential)}
         {--dry-run : List matching repos with their currently locked version and exit}
@@ -25,6 +26,8 @@ class UpdateCraftCommand extends UpdateCommand
         {--target-version= : Skip repos already at this version of the matched package}
         {--stop-ddev : Stop the ddev project in each repo after a successful update (default: keep running)}
         {--craft-command= : Full shell command to run in each repo (skips the editable-command prompt). Defaults to `ddev php craft update <handle> --interactive=0 --with-expired --minor-only --backup=1`.}
+        {--commit : After a successful run, commit "Package updates" with a body listing what changed (skips the prompt)}
+        {--no-commit : Skip the end-of-run commit step (skips the prompt)}
         {--crawl-repo=* : After composer prep, run the site-crawler only in these repo path(s). Skips the interactive crawler-selection prompt.}
         {--no-crawl : Skip the site-crawler step entirely.}
         {--crawler-command= : Full shell command to run as the crawler (skips the editable-command prompt). Defaults to `site-crawler crawl:ddev --exclude="assets,variant,index.php,downloads,actions,.pdf"`.}
@@ -37,7 +40,7 @@ class UpdateCraftCommand extends UpdateCommand
     public function handle(): int
     {
         $handle = (string) ($this->argument('handle') ?: text(
-            label: 'Which Craft plugin should be updated? (handle, or "craft" for Craft itself)',
+            label: 'Which Craft plugin should be updated? (handle, "craft" for Craft itself, or "all" for every Craft package)',
             placeholder: 'commerce',
             required: true,
         ));
@@ -51,16 +54,19 @@ class UpdateCraftCommand extends UpdateCommand
             return self::FAILURE;
         }
 
-        info($handle === 'craft'
-            ? "Scanning {$reposDir} for repos that require craftcms/cms..."
-            : "Scanning {$reposDir} for repos with craft plugin handle \"{$handle}\"...");
+        info(match ($handle) {
+            'craft' => "Scanning {$reposDir} for repos that require craftcms/cms...",
+            'all' => "Scanning {$reposDir} for Craft repos to update every Craft package in...",
+            default => "Scanning {$reposDir} for repos with craft plugin handle \"{$handle}\"...",
+        });
 
         $matches = FindCraftReposAction::find($reposDir, $handle);
 
         if (empty($matches)) {
-            warning($handle === 'craft'
-                ? "No repositories under {$reposDir} require craftcms/cms."
-                : "No repositories under {$reposDir} have craft plugin handle \"{$handle}\".");
+            warning(match ($handle) {
+                'craft', 'all' => "No repositories under {$reposDir} require craftcms/cms.",
+                default => "No repositories under {$reposDir} have craft plugin handle \"{$handle}\".",
+            });
             return self::SUCCESS;
         }
 
@@ -76,7 +82,9 @@ class UpdateCraftCommand extends UpdateCommand
             return self::SUCCESS;
         }
 
-        $rawTarget = $this->resolveTargetVersion();
+        // `all` doesn't track a single package, so a target version has nothing
+        // meaningful to filter against — skip the prompt and the filter.
+        $rawTarget = $handle === 'all' ? null : $this->resolveTargetVersion();
         [$matches, $preSkipped, $targetVersion] = $this->applyTargetVersionFilter($matches, $rawTarget);
 
         if (empty($matches)) {
@@ -92,6 +100,7 @@ class UpdateCraftCommand extends UpdateCommand
 
         $parallel = $this->resolveParallel();
         $keepDdevRunning = $this->resolveKeepDdevRunning();
+        $commit = $this->resolveCommit();
         $crawlPaths = $this->resolveCrawlSelection($matches);
         $crawlSet = array_flip($crawlPaths);
 
@@ -132,6 +141,8 @@ class UpdateCraftCommand extends UpdateCommand
             'crawl-repo' => $crawlPaths,
             'no-crawl' => empty($crawlPaths),
             'crawler-command' => $crawlerCommandLine,
+            'commit' => $commit,
+            'no-commit' => ! $commit,
             'yes' => true,
         ]);
 
@@ -151,15 +162,19 @@ class UpdateCraftCommand extends UpdateCommand
             keepDdevRunning: $keepDdevRunning,
             craftCommandLine: $craftCommandLine,
             crawlerCommandLine: isset($crawlSet[$repo]) ? $crawlerCommandLine : null,
+            commit: $commit,
         );
 
-        $buildCmd = function (string $repo, string $php, string $binary) use ($packagesByPath, $craftCommandLine, $keepDdevRunning, $crawlSet, $crawlerCommandLine): array {
+        $buildCmd = function (string $repo, string $php, string $binary) use ($packagesByPath, $craftCommandLine, $keepDdevRunning, $crawlSet, $crawlerCommandLine, $commit): array {
             $cmd = [$php, $binary, 'update:single', $repo, $packagesByPath[$repo], '--craft-command=' . $craftCommandLine];
             if (! $keepDdevRunning) {
                 $cmd[] = '--stop-ddev';
             }
             if (isset($crawlSet[$repo]) && $crawlerCommandLine !== null) {
                 $cmd[] = '--crawler-command=' . $crawlerCommandLine;
+            }
+            if ($commit) {
+                $cmd[] = '--commit';
             }
             return $cmd;
         };
@@ -176,6 +191,34 @@ class UpdateCraftCommand extends UpdateCommand
         $this->offerOpenPrompt($allResults);
 
         return self::SUCCESS;
+    }
+
+    /**
+     * Decide whether to auto-commit the resulting changes in each repo with
+     * title "Package updates" and a body listing the parsed updates. Asked
+     * once up-front (like keep-ddev). Precedence:
+     *   1. --no-commit  (returns false)
+     *   2. --commit     (returns true)
+     *   3. --yes        (defaults to true)
+     *   4. confirm()    (default: yes)
+     */
+    protected function resolveCommit(): bool
+    {
+        if ($this->option('no-commit')) {
+            return false;
+        }
+        if ($this->option('commit')) {
+            return true;
+        }
+        if ($this->option('yes')) {
+            return true;
+        }
+
+        return confirm(
+            label: 'Commit the package updates in each repo? (title: "Package updates", body: parsed update list)',
+            default: true,
+            hint: 'Runs `git add -A` and `git commit` after the update completes — only fires when craft printed a "Performing N updates:" list.',
+        );
     }
 
     /**

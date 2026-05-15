@@ -23,6 +23,9 @@ final readonly class RepoUpdateResult
         /** @var list<string> */
         public array $crawlerServerErrorUrls = [],
         public ?string $transcriptPath = null,
+        /** @var list<array{name: string, from: string, to: string}> */
+        public array $packageUpdates = [],
+        public bool $committed = false,
     ) {}
 
     public static function success(
@@ -40,6 +43,8 @@ final readonly class RepoUpdateResult
         ?string $crawlerLogPath = null,
         array $crawlerServerErrorUrls = [],
         ?string $transcriptPath = null,
+        array $packageUpdates = [],
+        bool $committed = false,
     ): self {
         return new self(
             repoPath: $path,
@@ -58,6 +63,8 @@ final readonly class RepoUpdateResult
             crawlerLogPath: $crawlerLogPath,
             crawlerServerErrorUrls: $crawlerServerErrorUrls,
             transcriptPath: $transcriptPath,
+            packageUpdates: $packageUpdates,
+            committed: $committed,
         );
     }
 
@@ -106,6 +113,8 @@ final readonly class RepoUpdateResult
             'crawlerLogPath' => $this->crawlerLogPath,
             'crawlerServerErrorUrls' => $this->crawlerServerErrorUrls,
             'transcriptPath' => $this->transcriptPath,
+            'packageUpdates' => $this->packageUpdates,
+            'committed' => $this->committed,
         ];
     }
 
@@ -130,6 +139,8 @@ final readonly class RepoUpdateResult
             crawlerLogPath: $data['crawlerLogPath'] ?? null,
             crawlerServerErrorUrls: is_array($data['crawlerServerErrorUrls'] ?? null) ? array_values($data['crawlerServerErrorUrls']) : [],
             transcriptPath: $data['transcriptPath'] ?? null,
+            packageUpdates: is_array($data['packageUpdates'] ?? null) ? array_values($data['packageUpdates']) : [],
+            committed: (bool) ($data['committed'] ?? false),
         );
     }
 }

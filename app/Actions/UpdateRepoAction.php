@@ -29,6 +29,9 @@ final class UpdateRepoAction
      *                                            repo after `composer prep`. A crawler failure
      *                                            does NOT mark the repo as failed; it surfaces
      *                                            via the crawlerFailed/crawlerLogPath fields.
+     * @param  bool  $commit  When true and craft prints a "Performing N updates:" list, the
+     *                        action stages everything and commits with title "Package updates"
+     *                        and a body listing those name/from/to lines.
      */
     public static function update(
         string $repoPath,
@@ -39,10 +42,11 @@ final class UpdateRepoAction
         bool $keepDdevRunning = true,
         ?string $craftCommandLine = null,
         ?string $crawlerCommandLine = null,
+        bool $commit = false,
     ): RepoUpdateResult {
         $transcriptPath = self::openTranscript($repoPath);
         try {
-            $result = self::doUpdate($repoPath, $package, $onProgress, $withAllDependencies, $updatePackage, $keepDdevRunning, $craftCommandLine, $crawlerCommandLine);
+            $result = self::doUpdate($repoPath, $package, $onProgress, $withAllDependencies, $updatePackage, $keepDdevRunning, $craftCommandLine, $crawlerCommandLine, $commit);
         } finally {
             self::closeTranscript();
         }
@@ -66,6 +70,7 @@ final class UpdateRepoAction
         bool $keepDdevRunning,
         ?string $craftCommandLine,
         ?string $crawlerCommandLine,
+        bool $commit,
     ): RepoUpdateResult {
         $updatePackage = $updatePackage ?? $package;
 
@@ -151,6 +156,10 @@ final class UpdateRepoAction
             return self::fail($repoPath, $branch, $failStep, $update);
         }
 
+        $packageUpdates = $craftCommandLine !== null
+            ? self::parseCraftUpdates($update->getOutput() . "\n" . $update->getErrorOutput())
+            : [];
+
         $prepRan = false;
         $testsFailed = null;
         $testsSummary = null;
@@ -211,6 +220,12 @@ final class UpdateRepoAction
         }
 
         $installedVersion = self::lockedVersion($repoPath, $package);
+
+        $committed = false;
+        if ($commit && ! empty($packageUpdates)) {
+            $committed = self::commitPackageUpdates($repoPath, $packageUpdates, $onProgress);
+        }
+
         $afterStatus = self::run(['git', 'status', '--porcelain'], $repoPath, 60, null, '', stream: false);
         $hasUncommittedChanges = trim($afterStatus->getOutput()) !== '';
 
@@ -228,7 +243,102 @@ final class UpdateRepoAction
             $crawlerFailed,
             $crawlerLogPath,
             $crawlerServerErrorUrls,
+            packageUpdates: $packageUpdates,
+            committed: $committed,
         );
+    }
+
+    /**
+     * Stage + commit working-tree changes with title "Package updates" and a
+     * body listing each parsed name/from/to update. Returns true on a
+     * successful commit, false on any failure (the caller treats it as a
+     * non-fatal best-effort — the repo just remains dirty for manual review).
+     *
+     * @param  list<array{name: string, from: string, to: string}>  $updates
+     * @param  callable(string, ?string, ?string): void|null  $onProgress
+     */
+    private static function commitPackageUpdates(string $repoPath, array $updates, ?callable $onProgress): bool
+    {
+        $status = self::run(['git', 'status', '--porcelain'], $repoPath, 60, null, '', stream: false);
+        if (! $status->isSuccessful() || trim($status->getOutput()) === '') {
+            return false;
+        }
+
+        $add = self::run(['git', 'add', '-A'], $repoPath, 120, $onProgress, 'git add -A');
+        if (! $add->isSuccessful()) {
+            return false;
+        }
+
+        $body = implode("\n", array_map(
+            fn (array $u) => sprintf('- %s %s => %s', $u['name'], $u['from'], $u['to']),
+            $updates,
+        ));
+
+        $commit = self::run(
+            ['git', 'commit', '-m', 'Package updates', '-m', $body],
+            $repoPath,
+            120,
+            $onProgress,
+            'git commit',
+        );
+
+        return $commit->isSuccessful();
+    }
+
+    /**
+     * Parses Craft's `Performing N updates:` block from `php craft update`
+     * output and returns the listed packages.
+     *
+     * The block looks like:
+     *
+     *     Performing 3 updates:
+     *
+     *         - craft 5.9.22 => 5.10.1
+     *         - ckeditor 4.11.3 => 5.5.0
+     *         - typografy 5.0.2 => 5.0.3
+     *
+     * We only collect lines inside that block — composer's own
+     * `Upgrading vendor/pkg (a => b)` lines (with parentheses) appear later
+     * and are deliberately ignored.
+     *
+     * @return list<array{name: string, from: string, to: string}>
+     */
+    public static function parseCraftUpdates(string $output): array
+    {
+        $stripped = preg_replace('/\x1b\[[0-9;]*[A-Za-z]/', '', $output) ?? $output;
+        $lines = preg_split("/\r\n|\r|\n/", $stripped) ?: [];
+
+        $updates = [];
+        $inBlock = false;
+
+        foreach ($lines as $line) {
+            $trimmed = trim($line);
+
+            if (preg_match('/^Performing\s+\d+\s+updates?:\s*$/i', $trimmed)) {
+                $inBlock = true;
+                continue;
+            }
+            if (! $inBlock) {
+                continue;
+            }
+
+            if ($trimmed === '') {
+                if (! empty($updates)) {
+                    break;
+                }
+                continue;
+            }
+
+            if (preg_match('/^-\s+(\S+)\s+(\S+)\s+=>\s+(\S+)\s*$/', $trimmed, $m)) {
+                $updates[] = ['name' => $m[1], 'from' => $m[2], 'to' => $m[3]];
+                continue;
+            }
+
+            // Non-blank, non-matching line ends the block.
+            break;
+        }
+
+        return $updates;
     }
 
     private static function hasComposerScript(string $repoPath, string $scriptName): bool
