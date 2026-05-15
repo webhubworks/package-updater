@@ -97,13 +97,13 @@ class UpdateCommand extends Command
     /** @param  list<string>  $cmd */
     private function writeLog(string $cwd, array $cmd, Process $process): ?string
     {
-        $dir = sys_get_temp_dir().'/pu-update';
-        if (! is_dir($dir) && ! @mkdir($dir, 0755, true) && ! is_dir($dir)) {
+        $dir = $this->resolveLogDir($cwd);
+        if ($dir === null) {
             return null;
         }
 
         $slug = preg_replace('/[^a-z0-9]+/i', '-', basename($cwd)) ?: 'repo';
-        $file = sprintf('%s/%s-%s.log', $dir, trim($slug, '-'), date('Ymd-His'));
+        $file = sprintf('%s/pu-update-%s-%s.log', $dir, trim($slug, '-'), date('Ymd-His'));
 
         $contents = '# Command: '.implode(' ', $cmd)."\n"
             .'# CWD: '.$cwd."\n"
@@ -115,11 +115,38 @@ class UpdateCommand extends Command
         return @file_put_contents($file, $contents) === false ? null : $file;
     }
 
+    /**
+     * Prefer the repo's own `storage/logs` (Laravel/Craft convention — keeps
+     * the log next to the code that produced it, and gets gitignored
+     * automatically). Fall back to a per-user dotdir when the repo isn't
+     * Laravel/Craft shaped so we don't pollute its working tree.
+     */
+    private function resolveLogDir(string $cwd): ?string
+    {
+        $repoLogs = $cwd.'/storage/logs';
+        if (is_dir($repoLogs) && is_writable($repoLogs)) {
+            return $repoLogs;
+        }
+
+        $home = $_SERVER['HOME'] ?? getenv('HOME') ?: null;
+        if ($home === null) {
+            return null;
+        }
+
+        $fallback = $home.'/.pu-update/logs';
+        if (! is_dir($fallback) && ! @mkdir($fallback, 0755, true) && ! is_dir($fallback)) {
+            return null;
+        }
+
+        return $fallback;
+    }
+
     private function printLogPath(?string $logPath): void
     {
         if ($logPath === null) {
             return;
         }
+        $this->newLine();
         $this->line("  <fg=gray>Log:</> {$logPath}");
     }
 
