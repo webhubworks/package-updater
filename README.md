@@ -50,26 +50,27 @@ Run `pu <name>` (or the longer `package-updater <name>`). Bare `pu`
 prints the command list. Every command is fully interactive — it will
 prompt for any answer it needs.
 
-### `composer-update`
+### `update`
 
 Single-repo helper. Run it from inside a repo: it verifies the working
 tree is clean, runs `composer update` (auto-detecting ddev when
 `.ddev/config.yaml` exists), parses Upgrading / Downgrading / Installing
 / Removing lines from composer's output, and commits the result with
 title `Package updates` and a body listing each change. Optional package
-arguments (`pu composer-update vendor/foo vendor/bar`) restrict the
-update to those packages. Use `--no-ddev` to force host composer,
-`--commit` / `--no-commit` to skip the commit prompt.
+arguments (`pu update vendor/foo vendor/bar`) restrict the update to
+those packages. Use `--no-ddev` to force host composer, `--commit` /
+`--no-commit` to skip the commit prompt.
 
-### `update`
+### `update:all`
 
-Universal composer-package update. Pick a `vendor/name`, pick a target
-version, pick which of the matching repos to run on, pick parallelism,
-confirm. Each repo runs `git pull` → `ddev start` → `ddev composer update`
-→ `composer prep` (if defined) → `ddev stop` (optional). Repos already
-at the target version are pre-skipped; with a bare target version, repos
-on a different major are pre-skipped too (prefix the version with `!` to
-force across majors).
+Universal bulk update — one composer package across every local repo
+that depends on it. Pick a `vendor/name`, pick a target version, pick
+which of the matching repos to run on, pick parallelism, confirm. Each
+repo runs `git pull` → `ddev start` → `ddev composer update` →
+`composer prep` (if defined) → `ddev stop` (optional). Repos already at
+the target version are pre-skipped; with a bare target version, repos
+on a different major are pre-skipped too (prefix the version with `!`
+to force across majors).
 
 ### `update:craft`
 
@@ -89,7 +90,7 @@ Craft-aware variant. Same flow, but:
 
 ### `retry`
 
-Re-runs the most recent `update` or `update:craft` non-interactively
+Re-runs the most recent `update:all` or `update:craft` non-interactively
 using the answers persisted in `logs/last-run.json`. Useful for working
 through a batch in chunks — already-up-to-date repos are skipped by the
 target-version filter, so each retry picks up where the previous one left
@@ -102,9 +103,9 @@ the `gitkraken://` URL scheme). By default it surfaces repos that
 warrant review: uncommitted working-tree changes, failed steps, failing
 tests after `composer prep`, crawler failures, or 5xx URLs from the
 crawler. You can narrow the pool with `--filter=changed`,
-`--filter=failed`, or `--filter=all`. Both `update` and `update:craft`
-also offer this prompt directly at the end of a run — push the resulting
-commits via GitKraken without context-switching.
+`--filter=failed`, or `--filter=all`. Both `update:all` and
+`update:craft` also offer this prompt directly at the end of a run —
+push the resulting commits via GitKraken without context-switching.
 
 ### Logs and transcripts
 

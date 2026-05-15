@@ -14,7 +14,7 @@ use function Laravel\Prompts\table;
 use function Laravel\Prompts\text;
 use function Laravel\Prompts\warning;
 
-class UpdateCraftCommand extends UpdateCommand
+class UpdateCraftCommand extends UpdateAllCommand
 {
     protected $signature = 'update:craft
         {handle? : Craft plugin handle, "craft" to update Craft itself, or "all" to update every Craft package}
