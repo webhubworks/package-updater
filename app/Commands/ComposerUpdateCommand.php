@@ -52,7 +52,7 @@ class ComposerUpdateCommand extends Command
         ));
 
         $cmd = $useDdev ? ['ddev', 'composer', 'update'] : ['composer', 'update'];
-        $cmd = array_merge($cmd, $packages, ['--no-audit']);
+        $cmd = array_merge($cmd, $packages);
         $label = implode(' ', $cmd);
 
         if (! $this->option('yes') && ! confirm("Run `{$label}` in {$cwd}?", default: true)) {
@@ -203,13 +203,12 @@ class ComposerUpdateCommand extends Command
 
         if ($stream) {
             $process->run(function (string $type, string $buffer): void {
-                $color = $type === Process::ERR ? 'yellow' : 'gray';
                 foreach (preg_split("/\r\n|\r|\n/", $buffer) as $line) {
                     $line = rtrim($line);
                     if ($line === '') {
                         continue;
                     }
-                    $this->line("    <fg={$color}>{$line}</>");
+                    $this->line("    <fg=gray>{$line}</>");
                 }
             });
         } else {
