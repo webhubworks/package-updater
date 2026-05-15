@@ -222,7 +222,7 @@ final class UpdateRepoAction
         $installedVersion = self::lockedVersion($repoPath, $package);
 
         $committed = false;
-        if ($commit && ! empty($packageUpdates)) {
+        if ($commit) {
             $committed = self::commitPackageUpdates($repoPath, $packageUpdates, $onProgress);
         }
 
@@ -249,10 +249,16 @@ final class UpdateRepoAction
     }
 
     /**
-     * Stage + commit working-tree changes with title "Package updates" and a
-     * body listing each parsed name/from/to update. Returns true on a
-     * successful commit, false on any failure (the caller treats it as a
-     * non-fatal best-effort — the repo just remains dirty for manual review).
+     * Stage + commit every working-tree change with title "Package updates"
+     * and a body listing each parsed name/from/to update.
+     *
+     * The start-of-run dirty check guarantees the working tree was clean when
+     * we began, so every change here originated from this run (ddev side
+     * effects, craft update, composer prep). We commit all of it, even when
+     * the parsed update list is empty — otherwise an unparseable header (e.g.
+     * a craft variant the regex doesn't recognise) leaves the repo "dirty"
+     * for no real reason. Returns true on a successful commit, false on any
+     * failure (non-fatal — repo just stays dirty for manual review).
      *
      * @param  list<array{name: string, from: string, to: string}>  $updates
      * @param  callable(string, ?string, ?string): void|null  $onProgress
@@ -269,10 +275,12 @@ final class UpdateRepoAction
             return false;
         }
 
-        $body = implode("\n", array_map(
-            fn (array $u) => sprintf('- %s %s => %s', $u['name'], $u['from'], $u['to']),
-            $updates,
-        ));
+        $body = empty($updates)
+            ? '(no update list parsed from craft output)'
+            : implode("\n", array_map(
+                fn (array $u) => sprintf('- %s %s => %s', $u['name'], $u['from'], $u['to']),
+                $updates,
+            ));
 
         $commit = self::run(
             ['git', 'commit', '-m', 'Package updates', '-m', $body],
@@ -314,7 +322,9 @@ final class UpdateRepoAction
         foreach ($lines as $line) {
             $trimmed = trim($line);
 
-            if (preg_match('/^Performing\s+\d+\s+updates?:\s*$/i', $trimmed)) {
+            // The count may be a digit ("Performing 3 updates:") or an English
+            // word ("Performing one update:") — accept either.
+            if (preg_match('/^Performing\s+\S+\s+updates?:\s*$/i', $trimmed)) {
                 $inBlock = true;
                 continue;
             }

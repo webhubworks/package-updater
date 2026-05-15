@@ -936,7 +936,10 @@ class UpdateCommand extends Command
         }
 
         if ($r->committed) {
-            $parts[] = sprintf('committed %d update(s)', count($r->packageUpdates));
+            $count = count($r->packageUpdates);
+            $parts[] = $count > 0
+                ? sprintf('committed %d update(s)', $count)
+                : 'committed (no parsed updates)';
         } elseif ($r->hasUncommittedChanges) {
             $parts[] = 'uncommitted changes';
         }

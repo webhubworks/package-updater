@@ -36,6 +36,18 @@ TXT;
     ]);
 });
 
+test('parses craft\'s English-word count header ("Performing one update:")', function () {
+    $output = <<<TXT
+Performing one update:
+    - craft 4.17.15 => 4.18.0
+Skipping database backup.
+TXT;
+
+    expect(UpdateRepoAction::parseCraftUpdates($output))->toBe([
+        ['name' => 'craft', 'from' => '4.17.15', 'to' => '4.18.0'],
+    ]);
+});
+
 test('strips ANSI color codes before matching', function () {
     $output = "\x1b[32mPerforming 1 update:\x1b[0m\n\n    - \x1b[36mcraft\x1b[0m 5.9.22 => 5.10.1\n";
 
