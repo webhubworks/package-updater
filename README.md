@@ -10,42 +10,58 @@ open repos with uncommitted changes in GitKraken for review.
 
 ## 1. Installation
 
+### Global (recommended)
+
+```bash
+composer global require webhubworks/package-updater
+```
+
+Make sure Composer's global bin directory is on your `PATH` — typically
+`~/.composer/vendor/bin` (macOS/Linux) or `%APPDATA%\Composer\vendor\bin`
+(Windows). After that, both `package-updater` and the shorter alias `pu`
+are available from anywhere.
+
+Set `REPOS_DIR` in your shell (or via `.env` next to the tool) so it
+points at the directory you want scanned (defaults to `$HOME/reps`). The
+walker descends through grouping folders (e.g. `~/reps/my7steps/<repo>`),
+considers a directory a candidate only when it contains a
+`composer.lock`, and filters out anything that's not a git repo or that
+itself declares `"type": "craft-plugin"`.
+
+To upgrade later:
+
+```bash
+composer global update webhubworks/package-updater
+```
+
+### Local clone (for development)
+
 ```bash
 cd ~/reps
 git clone <repo-url> package-updater
 cd package-updater
 composer install
-chmod +x package-updater
-cp .env.example .env
-```
-
-Edit `.env` so `REPOS_DIR` points at the directory you want scanned
-(defaults to `$HOME/reps`). The walker descends through grouping folders
-(e.g. `~/reps/my7steps/<repo>`), considers a directory a candidate only
-when it contains a `composer.lock`, and filters out anything that's not a
-git repo or that itself declares `"type": "craft-plugin"`.
-
-Optional — make it callable from anywhere:
-
-```bash
-ln -s ~/reps/package-updater/package-updater /usr/local/bin/package-updater
-```
-
-To upgrade later:
-
-```bash
-cd ~/reps/package-updater
-git pull
-composer install
+./package-updater list
 ```
 
 ## 2. Commands
 
-Run `./package-updater <name>` (or just `./package-updater` for the default
-`update`). Every command is fully interactive — it will prompt for any
-answer it needs.
+Run `pu <name>` (or the longer `package-updater <name>`). Bare `pu`
+prints the command list. Every command is fully interactive — it will
+prompt for any answer it needs.
 
-### `update` (default)
+### `composer-update`
+
+Single-repo helper. Run it from inside a repo: it verifies the working
+tree is clean, runs `composer update` (auto-detecting ddev when
+`.ddev/config.yaml` exists), parses Upgrading / Downgrading / Installing
+/ Removing lines from composer's output, and commits the result with
+title `Package updates` and a body listing each change. Optional package
+arguments (`pu composer-update vendor/foo vendor/bar`) restrict the
+update to those packages. Use `--no-ddev` to force host composer,
+`--commit` / `--no-commit` to skip the commit prompt.
+
+### `update`
 
 Universal composer-package update. Pick a `vendor/name`, pick a target
 version, pick which of the matching repos to run on, pick parallelism,
@@ -110,8 +126,10 @@ the transcript and per-step logs are how you investigate.
 
 ### Repo directory
 
-`REPOS_DIR` in `.env` — single source of truth for where to scan. Default:
-`$HOME/reps`. Per-run override available on every command.
+`REPOS_DIR` (env var, or `.env` next to the tool when running from a
+local clone) — single source of truth for where to scan. Default:
+`$HOME/reps`. Per-run override available on every command via
+`--reps-dir=`.
 
 ### Git credentials (HTTPS remotes)
 
