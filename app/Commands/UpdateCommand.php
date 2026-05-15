@@ -61,10 +61,12 @@ class UpdateCommand extends Command
         }
 
         $update = $this->runComposer($cmd, $cwd, $label);
+        $logPath = $this->writeLog($cwd, $cmd, $update);
 
         if (! $update->isSuccessful()) {
             $this->error("composer update failed (exit {$update->getExitCode()}):");
             $this->dumpOutput($update);
+            $this->printLogPath($logPath);
             return self::FAILURE;
         }
 
@@ -83,12 +85,42 @@ class UpdateCommand extends Command
         }
 
         $this->renderAudit($audit);
+        $this->printLogPath($logPath);
 
         if (! $this->shouldCommit()) {
             return self::SUCCESS;
         }
 
         return $this->commit($cwd, $updates) ? self::SUCCESS : self::FAILURE;
+    }
+
+    /** @param  list<string>  $cmd */
+    private function writeLog(string $cwd, array $cmd, Process $process): ?string
+    {
+        $dir = sys_get_temp_dir().'/pu-update';
+        if (! is_dir($dir) && ! @mkdir($dir, 0755, true) && ! is_dir($dir)) {
+            return null;
+        }
+
+        $slug = preg_replace('/[^a-z0-9]+/i', '-', basename($cwd)) ?: 'repo';
+        $file = sprintf('%s/%s-%s.log', $dir, trim($slug, '-'), date('Ymd-His'));
+
+        $contents = '# Command: '.implode(' ', $cmd)."\n"
+            .'# CWD: '.$cwd."\n"
+            .'# Exit: '.$process->getExitCode()."\n"
+            .'# Timestamp: '.date('c')."\n"
+            ."\n--- STDOUT ---\n".$process->getOutput()
+            ."\n--- STDERR ---\n".$process->getErrorOutput();
+
+        return @file_put_contents($file, $contents) === false ? null : $file;
+    }
+
+    private function printLogPath(?string $logPath): void
+    {
+        if ($logPath === null) {
+            return;
+        }
+        $this->line("  <fg=gray>Log:</> {$logPath}");
     }
 
     /** @param  list<string>  $cmd */
