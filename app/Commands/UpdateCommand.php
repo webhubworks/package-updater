@@ -87,6 +87,12 @@ class UpdateCommand extends Command
         $this->renderAudit($audit);
         $this->printLogPath($logPath);
 
+        $statusAfter = $this->exec(['git', 'status', '--porcelain'], $cwd, stream: false);
+        if (! $statusAfter->isSuccessful() || trim($statusAfter->getOutput()) === '') {
+            info('No working-tree changes after composer update — nothing to commit.');
+            return self::SUCCESS;
+        }
+
         if (! $this->shouldCommit()) {
             return self::SUCCESS;
         }
@@ -239,12 +245,6 @@ class UpdateCommand extends Command
     /** @param  list<array{kind: string, name: string, from: ?string, to: ?string}>  $updates */
     private function commit(string $cwd, array $updates): bool
     {
-        $status = $this->exec(['git', 'status', '--porcelain'], $cwd, stream: false);
-        if (! $status->isSuccessful() || trim($status->getOutput()) === '') {
-            info('No working-tree changes after composer update — nothing to commit.');
-            return true;
-        }
-
         $add = $this->exec(['git', 'add', '-A'], $cwd, stream: false);
         if (! $add->isSuccessful()) {
             warning('git add -A failed.');
