@@ -3,11 +3,12 @@
 namespace App\Commands;
 
 use LaravelZero\Framework\Commands\Command;
+use Symfony\Component\Console\Formatter\OutputFormatter;
+use Symfony\Component\Console\Terminal;
 use Symfony\Component\Process\Process;
 
 use function Laravel\Prompts\confirm;
 use function Laravel\Prompts\info;
-use function Laravel\Prompts\spin;
 use function Laravel\Prompts\warning;
 
 class UpdateCommand extends Command
@@ -164,10 +165,69 @@ class UpdateCommand extends Command
             return $this->exec($cmd, $cwd, stream: true);
         }
 
-        return spin(
-            fn () => $this->exec($cmd, $cwd, stream: false),
-            "Running `{$label}`...",
-        );
+        return $this->runComposerWithTail($cmd, $cwd, $label);
+    }
+
+    /**
+     * Runs composer with a 5-line live "tail" view: header + the last few
+     * output lines, redrawn in place via ANSI cursor controls. Falls back to
+     * a single static "Running..." line for non-decorated outputs (pipes,
+     * CI), where redraw escapes would render as garbage.
+     *
+     * @param  list<string>  $cmd
+     */
+    private function runComposerWithTail(array $cmd, string $cwd, string $label): Process
+    {
+        if (! $this->output->isDecorated()) {
+            $this->line("  Running `{$label}`...");
+            return $this->exec($cmd, $cwd, stream: false);
+        }
+
+        $maxLines = 5;
+        $width = max(40, (new Terminal())->getWidth() - 6);
+        $buffer = [];
+        $rendered = 0;
+        $output = $this->output;
+
+        $output->writeln("  <fg=cyan>⠋</> Running <options=bold>{$label}</>...");
+
+        $clear = function () use (&$rendered, $output): void {
+            for ($i = 0; $i < $rendered; $i++) {
+                $output->write("\033[1A\033[2K");
+            }
+            $rendered = 0;
+        };
+
+        $draw = function () use (&$buffer, &$rendered, $maxLines, $width, $output, $clear): void {
+            $clear();
+            $shown = array_slice($buffer, -$maxLines);
+            foreach ($shown as $line) {
+                $line = mb_strimwidth($line, 0, $width, '…');
+                $output->writeln('    <fg=gray>' . OutputFormatter::escape($line) . '</>');
+                $rendered++;
+            }
+        };
+
+        $process = new Process($cmd, $cwd);
+        $process->setTimeout(3600);
+        $process->run(function (string $type, string $chunk) use (&$buffer, $draw): void {
+            $chunk = preg_replace('/\x1b\[[0-9;]*[A-Za-z]/', '', $chunk) ?? $chunk;
+            foreach (preg_split("/\r\n|\r|\n/", $chunk) as $line) {
+                $line = rtrim($line);
+                if ($line === '') {
+                    continue;
+                }
+                $buffer[] = $line;
+                $draw();
+            }
+        });
+
+        // Wipe the tail strip and the "Running..." header so the summary that
+        // follows starts on a clean line.
+        $clear();
+        $output->write("\033[1A\033[2K");
+
+        return $process;
     }
 
     private function dumpOutput(Process $process): void
