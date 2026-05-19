@@ -12,6 +12,7 @@ use Illuminate\Console\OutputStyle;
 use LaravelZero\Framework\Commands\Command;
 use Symfony\Component\Console\Output\ConsoleOutputInterface;
 use Symfony\Component\Console\Output\ConsoleSectionOutput;
+use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Process\PhpExecutableFinder;
 use Symfony\Component\Process\Process;
 
@@ -598,12 +599,7 @@ class UpdateAllCommand extends Command
                 ];
                 $running[] = $entry;
 
-                $line = $this->formatRunningLine($entry, $spinnerFrames[0], $total);
-                if ($section !== null) {
-                    $section->writeln($line);
-                } else {
-                    $this->line($line);
-                }
+                $this->sectionWriteln($entry['section'], $this->formatRunningLine($entry, $spinnerFrames[0], $total));
             }
 
             usleep(200_000);
@@ -613,7 +609,7 @@ class UpdateAllCommand extends Command
                 $frame = $spinnerFrames[$tick % count($spinnerFrames)];
                 foreach ($running as $entry) {
                     if ($entry['process']->isRunning() && $entry['section'] !== null) {
-                        $entry['section']->overwrite($this->formatRunningLine($entry, $frame, $total));
+                        $this->sectionOverwrite($entry['section'], $this->formatRunningLine($entry, $frame, $total));
                     }
                 }
             }
@@ -629,7 +625,7 @@ class UpdateAllCommand extends Command
 
                 $finalLine = $this->formatRepoLine($result, $entry['index'], $total, microtime(true) - $entry['started']);
                 if ($entry['section'] !== null) {
-                    $entry['section']->overwrite($finalLine);
+                    $this->sectionOverwrite($entry['section'], $finalLine);
                 } else {
                     $this->line($finalLine);
                 }
@@ -639,6 +635,35 @@ class UpdateAllCommand extends Command
         }
 
         return $results;
+    }
+
+    /**
+     * Write a freshly-formatted message into a console section. We pre-format
+     * the message through the parent OutputStyle's formatter and pass
+     * OUTPUT_RAW to the section, so that the rendered ANSI codes (or stripped
+     * tags, when not decorated) always reach the section's doWrite — bypassing
+     * any path where the section's own formatter mis-handles `<fg=…>` tags
+     * and prints them literally. Falls back to $this->line() when the section
+     * is null (non-TTY/parallel disabled).
+     */
+    protected function sectionWriteln(?ConsoleSectionOutput $section, string $message): void
+    {
+        if ($section === null) {
+            $this->line($message);
+            return;
+        }
+        $section->writeln($this->output->getFormatter()->format($message), OutputInterface::OUTPUT_RAW);
+    }
+
+    /**
+     * Re-render an existing section line in place. Equivalent to
+     * $section->overwrite(...) but pre-formats the message so the ANSI codes
+     * reach doWrite intact (see sectionWriteln for the rationale).
+     */
+    protected function sectionOverwrite(ConsoleSectionOutput $section, string $message): void
+    {
+        $section->clear();
+        $section->writeln($this->output->getFormatter()->format($message), OutputInterface::OUTPUT_RAW);
     }
 
     /** @param array{repo: string, index: int, started: float} $entry */
