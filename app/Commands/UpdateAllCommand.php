@@ -6,6 +6,7 @@ use App\Actions\FindReposAction;
 use App\Actions\LastRunStore;
 use App\Actions\OpenInGitKrakenAction;
 use App\Actions\UpdateRepoAction;
+use App\Concerns\ResolvesReposDir;
 use App\DataTransferObjects\RepoUpdateResult;
 use Illuminate\Console\OutputStyle;
 use LaravelZero\Framework\Commands\Command;
@@ -24,6 +25,8 @@ use function Laravel\Prompts\warning;
 
 class UpdateAllCommand extends Command
 {
+    use ResolvesReposDir;
+
     protected $signature = 'update:all
         {package? : Composer package name (vendor/name)}
         {--reps-dir= : Directory containing repos (default: ~/reps)}
@@ -52,8 +55,10 @@ class UpdateAllCommand extends Command
                 : 'Use vendor/package format',
         );
 
-        $reposDir = $this->option('reps-dir') ?: config('package-updater.repos_dir');
-        $reposDir = rtrim((string) $reposDir, '/');
+        $reposDir = $this->resolveReposDir();
+        if ($reposDir === null) {
+            return self::FAILURE;
+        }
 
         if (! is_dir($reposDir)) {
             $this->error("Repos directory not found: {$reposDir}");

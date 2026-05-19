@@ -46,8 +46,10 @@ class UpdateCraftCommand extends UpdateAllCommand
         ));
         $handle = trim($handle);
 
-        $reposDir = $this->option('reps-dir') ?: config('package-updater.repos_dir');
-        $reposDir = rtrim((string) $reposDir, '/');
+        $reposDir = $this->resolveReposDir();
+        if ($reposDir === null) {
+            return self::FAILURE;
+        }
 
         if (! is_dir($reposDir)) {
             $this->error("Repos directory not found: {$reposDir}");
