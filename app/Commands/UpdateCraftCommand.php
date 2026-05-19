@@ -39,13 +39,8 @@ class UpdateCraftCommand extends UpdateAllCommand
 
     public function handle(): int
     {
-        $handle = (string) ($this->argument('handle') ?: text(
-            label: 'Which Craft plugin should be updated? (handle, "craft" for Craft itself, or "all" for every Craft package)',
-            placeholder: 'commerce',
-            required: true,
-        ));
-        $handle = trim($handle);
-
+        // Resolve the repos dir BEFORE any other prompt so the first-run
+        // setup flow runs before we start asking about plugins.
         $reposDir = $this->resolveReposDir();
         if ($reposDir === null) {
             return self::FAILURE;
@@ -55,6 +50,13 @@ class UpdateCraftCommand extends UpdateAllCommand
             $this->error("Repos directory not found: {$reposDir}");
             return self::FAILURE;
         }
+
+        $handle = (string) ($this->argument('handle') ?: text(
+            label: 'Which Craft plugin should be updated? (handle, "craft" for Craft itself, or "all" for every Craft package)',
+            placeholder: 'commerce',
+            required: true,
+        ));
+        $handle = trim($handle);
 
         info(match ($handle) {
             'craft' => "Scanning {$reposDir} for repos that require craftcms/cms...",

@@ -47,15 +47,8 @@ class UpdateAllCommand extends Command
 
     public function handle(): int
     {
-        $package = $this->argument('package') ?: text(
-            label: 'Which Composer package should be updated?',
-            placeholder: 'webhubworks/panoptikum-cell',
-            required: true,
-            validate: fn (string $value) => str_contains($value, '/')
-                ? null
-                : 'Use vendor/package format',
-        );
-
+        // Resolve the repos dir BEFORE any other prompt so the first-run
+        // setup flow runs before we start asking about packages/plugins.
         $reposDir = $this->resolveReposDir();
         if ($reposDir === null) {
             return self::FAILURE;
@@ -65,6 +58,15 @@ class UpdateAllCommand extends Command
             $this->error("Repos directory not found: {$reposDir}");
             return self::FAILURE;
         }
+
+        $package = $this->argument('package') ?: text(
+            label: 'Which Composer package should be updated?',
+            placeholder: 'webhubworks/panoptikum-cell',
+            required: true,
+            validate: fn (string $value) => str_contains($value, '/')
+                ? null
+                : 'Use vendor/package format',
+        );
 
         info("Scanning {$reposDir} for repos that require {$package}...");
         $matches = FindReposAction::find($reposDir, $package);
