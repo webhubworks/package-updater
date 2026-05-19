@@ -232,10 +232,11 @@ class UpdateAllCommand extends Command
     }
 
     /**
-     * Offer to open every repo that ended the run with uncommitted changes
-     * in GitKraken (one tab per repo via the gitkraken:// URL scheme). The
-     * default selection is all such repos. Skipped if --no-open is set, or
-     * if --yes is set without an explicit --open.
+     * Offer to open every non-skipped repo (success or failure) in GitKraken
+     * (one tab per repo via the gitkraken:// URL scheme). Successes are worth
+     * a tab so the user can review the commit / push it; failures so they can
+     * investigate. The default selection is all candidates. Skipped if
+     * --no-open is set, or if --yes is set without an explicit --open.
      *
      * @param  list<RepoUpdateResult>  $results
      */
@@ -247,7 +248,7 @@ class UpdateAllCommand extends Command
 
         $candidates = array_values(array_filter(
             $results,
-            fn (RepoUpdateResult $r) => $r->hasUncommittedChanges,
+            fn (RepoUpdateResult $r) => $r->status !== 'skipped',
         ));
         if (empty($candidates)) {
             return;
@@ -261,10 +262,10 @@ class UpdateAllCommand extends Command
         } else {
             $options = [];
             foreach ($candidates as $r) {
-                $options[$r->repoPath] = basename($r->repoPath);
+                $options[$r->repoPath] = basename($r->repoPath) . OpenCommand::badge($r);
             }
             $selected = multiselect(
-                label: sprintf('Open %d repo(s) with uncommitted changes in GitKraken?', count($candidates)),
+                label: sprintf('Open %d repo(s) in GitKraken?', count($candidates)),
                 options: $options,
                 default: array_keys($options),
                 hint: 'Space to toggle · Ctrl+A to select/deselect all · Enter to confirm',

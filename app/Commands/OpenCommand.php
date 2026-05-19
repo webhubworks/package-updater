@@ -14,7 +14,7 @@ use function Laravel\Prompts\warning;
 class OpenCommand extends Command
 {
     protected $signature = 'open
-        {--filter= : changed | failed | all (default: any repo worth reviewing — uncommitted changes, failures, failing tests, crawler issues)}
+        {--filter= : changed | failed | all (default: every processed repo — both successes and failures, but not skipped)}
         {--yes : Open every repo in the filtered pool without prompting}';
 
     protected $description = 'Open repos from the most recent update run in GitKraken';
@@ -34,7 +34,7 @@ class OpenCommand extends Command
             'changed' => fn (RepoUpdateResult $r) => $r->hasUncommittedChanges,
             'failed' => fn (RepoUpdateResult $r) => $r->status === 'failed',
             'all' => fn (RepoUpdateResult $r) => true,
-            default => fn (RepoUpdateResult $r) => self::needsReview($r),
+            default => fn (RepoUpdateResult $r) => $r->status !== 'skipped',
         }));
 
         if (empty($pool)) {
@@ -75,35 +75,23 @@ class OpenCommand extends Command
         return self::SUCCESS;
     }
 
-    private static function needsReview(RepoUpdateResult $r): bool
-    {
-        if ($r->status === 'failed') {
-            return true;
-        }
-        if ($r->hasUncommittedChanges) {
-            return true;
-        }
-        if ($r->prepRan && ($r->testsFailed ?? 0) > 0) {
-            return true;
-        }
-        if ($r->crawlerFailed) {
-            return true;
-        }
-        if (! empty($r->crawlerServerErrorUrls)) {
-            return true;
-        }
-
-        return false;
-    }
-
-    private static function badge(RepoUpdateResult $r): string
+    /**
+     * Build the inline tags shown next to each repo in the multiselect, so
+     * the user can tell at a glance which repos failed vs. which succeeded
+     * (committed or not). Also called from UpdateAllCommand::offerOpenPrompt
+     * to keep both prompts consistent.
+     */
+    public static function badge(RepoUpdateResult $r): string
     {
         $tags = [];
         if ($r->status === 'failed') {
             $tags[] = 'failed';
-        }
-        if ($r->hasUncommittedChanges) {
-            $tags[] = 'uncommitted';
+        } elseif ($r->status === 'success') {
+            if ($r->committed) {
+                $tags[] = 'committed';
+            } elseif ($r->hasUncommittedChanges) {
+                $tags[] = 'uncommitted';
+            }
         }
         if ($r->prepRan && ($r->testsFailed ?? 0) > 0) {
             $tags[] = 'tests';
