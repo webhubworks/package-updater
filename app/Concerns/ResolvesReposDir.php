@@ -29,6 +29,16 @@ trait ResolvesReposDir
             return rtrim($configured, '/');
         }
 
+        // Belt-and-suspenders: read the user config file directly, in case
+        // the service-provider merge step didn't take effect for whatever
+        // reason. Avoids triggering setup again when the file is already
+        // there with a valid value.
+        $userValue = UserConfig::getReposDir();
+        if ($userValue !== null) {
+            config()->set('package-updater.repos_dir', $userValue);
+            return rtrim($userValue, '/');
+        }
+
         info('No repos directory configured yet — running `pu setup` first.');
         if ($this->call('setup') !== 0) {
             $this->error('Setup did not complete; aborting.');

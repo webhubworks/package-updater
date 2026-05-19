@@ -17,7 +17,11 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
-        if (config('package-updater.repos_dir') !== null) {
+        // Treat both null and empty string as "env didn't provide a value" —
+        // an empty REPOS_DIR= line in .env (or no .env at all in a global
+        // install) shouldn't prevent the user config file from kicking in.
+        $current = config('package-updater.repos_dir');
+        if (is_string($current) && $current !== '') {
             return;
         }
 
