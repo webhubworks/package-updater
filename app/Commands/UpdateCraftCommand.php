@@ -22,6 +22,7 @@ class UpdateCraftCommand extends UpdateAllCommand
         {--parallel= : Number of repos to update concurrently (default: prompt; 1 = sequential)}
         {--dry-run : List matching repos with their currently locked version and exit}
         {--repo=* : Process only the specified repo path(s); can be passed multiple times. Skips the interactive repo selection.}
+        {--filter-name= : Keep only repos whose composer.json "name" contains this substring}
         {--no-ssh-auth : Skip the initial `ddev auth ssh` step}
         {--target-version= : Skip repos already at this version of the matched package}
         {--stop-ddev : Stop the ddev project in each repo after a successful update (default: keep running)}
@@ -75,7 +76,23 @@ class UpdateCraftCommand extends UpdateAllCommand
         }
 
         $totalFound = count($matches);
-        info(sprintf('Found %d repositor%s.', $totalFound, $totalFound === 1 ? 'y' : 'ies'));
+        $matches = $this->applyNameFilter($matches);
+
+        if (empty($matches)) {
+            warning(sprintf(
+                "No repos remain after --filter-name=%s (started with %d).",
+                (string) $this->option('filter-name'),
+                $totalFound,
+            ));
+            return self::SUCCESS;
+        }
+
+        info(sprintf(
+            'Found %d repositor%s%s.',
+            count($matches),
+            count($matches) === 1 ? 'y' : 'ies',
+            count($matches) !== $totalFound ? sprintf(' (filtered from %d by name)', $totalFound) : '',
+        ));
 
         if ($this->option('dry-run')) {
             table(
@@ -138,6 +155,7 @@ class UpdateCraftCommand extends UpdateAllCommand
             'reps-dir' => $reposDir,
             'parallel' => (string) $parallel,
             'target-version' => $rawTarget,
+            'filter-name' => $this->option('filter-name') ?: null,
             'repo' => array_map(fn ($m) => $m['path'], $matches),
             'stop-ddev' => ! $keepDdevRunning,
             'no-ssh-auth' => (bool) $this->option('no-ssh-auth'),

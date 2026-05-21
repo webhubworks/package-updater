@@ -34,6 +34,7 @@ class UpdateAllCommand extends Command
         {--parallel= : Number of repos to update concurrently (default: prompt; 1 = sequential)}
         {--dry-run : List matching repos with their currently locked version and exit}
         {--repo=* : Process only the specified repo path(s); can be passed multiple times. Skips the interactive repo selection.}
+        {--filter-name= : Keep only repos whose composer.json "name" contains this substring}
         {--no-ssh-auth : Skip the initial `ddev auth ssh` step}
         {--with-all-dependencies : Pass -W to composer (always set when --update-package is used)}
         {--update-package= : Run `composer update` on this package instead of the target. Useful for transitive targets where a parent constraint blocks reaching the desired version.}
@@ -77,11 +78,22 @@ class UpdateAllCommand extends Command
         }
 
         $totalFound = count($matches);
+        $matches = $this->applyNameFilter($matches);
+
+        if (empty($matches)) {
+            warning(sprintf(
+                "No repos remain after --filter-name=%s (started with %d).",
+                (string) $this->option('filter-name'),
+                $totalFound,
+            ));
+            return self::SUCCESS;
+        }
 
         info(sprintf(
-            'Found %d repositor%s.',
-            $totalFound,
-            $totalFound === 1 ? 'y' : 'ies',
+            'Found %d repositor%s%s.',
+            count($matches),
+            count($matches) === 1 ? 'y' : 'ies',
+            count($matches) !== $totalFound ? sprintf(' (filtered from %d by name)', $totalFound) : '',
         ));
 
         if ($this->option('dry-run')) {
@@ -163,6 +175,7 @@ class UpdateAllCommand extends Command
             'reps-dir' => $reposDir,
             'parallel' => (string) $parallel,
             'target-version' => $rawTarget,
+            'filter-name' => $this->option('filter-name') ?: null,
             'update-package' => $updatePackage !== $package ? $updatePackage : null,
             'with-all-dependencies' => $withAllDependencies,
             'repo' => array_map(fn ($m) => $m['path'], $matches),
@@ -329,6 +342,36 @@ class UpdateAllCommand extends Command
         $set = array_flip(array_map('strval', (array) $selected));
 
         return array_values(array_filter($matches, fn ($m) => isset($set[$m['path']])));
+    }
+
+    /**
+     * Filter matches by substring match against the repo's composer.json "name"
+     * field. No-op when --filter-name is not set.
+     *
+     * @param  list<array{path: string, version: string, ...}>  $matches
+     * @return list<array<string, mixed>>
+     */
+    protected function applyNameFilter(array $matches): array
+    {
+        $filter = $this->option('filter-name');
+        if (! is_string($filter) || $filter === '') {
+            return $matches;
+        }
+
+        return array_values(array_filter($matches, function ($m) use ($filter) {
+            $composerJson = $m['path'] . '/composer.json';
+            $content = @file_get_contents($composerJson);
+            if ($content === false) {
+                return false;
+            }
+            $data = json_decode($content, true);
+            if (! is_array($data)) {
+                return false;
+            }
+            $name = (string) ($data['name'] ?? '');
+
+            return $name !== '' && str_contains($name, $filter);
+        }));
     }
 
     protected function resolveTargetVersion(): ?string

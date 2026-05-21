@@ -72,6 +72,11 @@ the target version are pre-skipped; with a bare target version, repos
 on a different major are pre-skipped too (prefix the version with `!`
 to force across majors).
 
+`--filter-name=<substring>` narrows the match set to repos whose
+`composer.json` `name` contains the given substring — e.g.
+`pu update:all vendor/foo --filter-name=mvb` only considers repos with
+`mvb` in their composer name.
+
 ### `update:craft`
 
 Craft-aware variant. Same flow, but:
@@ -87,6 +92,10 @@ Craft-aware variant. Same flow, but:
   second multiselect-chosen subset of repos. Parses the crawler's
   "Failed requests" table and warns on any 5xx URLs even if the crawler
   itself exited cleanly.
+
+`--filter-name=<substring>` works the same way as on `update:all`:
+restricts the match set to repos whose `composer.json` `name` contains
+the substring.
 
 ### `retry`
 
