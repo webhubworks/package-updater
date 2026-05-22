@@ -99,7 +99,7 @@ final class UpdateRepoAction
             return self::fail($repoPath, $branch, "git checkout {$branch}", $checkout);
         }
 
-        $pull = self::run(['git', 'pull', '--ff-only'], $repoPath, 600, $onProgress, 'git pull --ff-only');
+        $pull = self::run(['git', 'pull', '--ff-only', 'origin', $branch], $repoPath, 600, $onProgress, "git pull --ff-only origin {$branch}");
         if (! $pull->isSuccessful()) {
             return self::fail($repoPath, $branch, 'git pull', $pull);
         }
