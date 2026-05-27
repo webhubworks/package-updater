@@ -10,17 +10,15 @@ final class UpdateRepoAction
     private const BranchCandidates = ['develop', 'dev', 'staging', 'stag', 'stage', 'main', 'master', 'prod', 'live'];
 
     /**
+     * @param  string  $package         The target package whose version we track in the result.
      * @param  callable(string $step, ?string $type, ?string $chunk): void|null  $onProgress
      *         Called with ('step-start', null, label) before each step, and
      *         (label, 'out'|'err', chunk) for each output chunk.
-     */
-    /**
-     * @param  string  $package         The target package whose version we track in the result
+     * @param  bool  $withAllDependencies  Pass -W to composer.
      * @param  string|null  $updatePackage  The package composer should actually `update`
      *                                      (defaults to $package). Override with a parent
      *                                      package when its constraint blocks $package from
      *                                      reaching the desired version.
-     * @param  bool  $withAllDependencies  Pass -W to composer.
      * @param  string|null  $craftCommandLine  When set, the update step runs this shell command
      *                                          (e.g. `ddev craft update commerce --interactive=0`)
      *                                          instead of `ddev composer update`. $package is still
@@ -29,11 +27,9 @@ final class UpdateRepoAction
      *                                            repo after `composer prep`. A crawler failure
      *                                            does NOT mark the repo as failed; it surfaces
      *                                            via the crawlerFailed/crawlerLogPath fields.
-     * @param  bool  $commit  When true and craft prints a "Performing N updates:" list, the
-     *                        action stages everything and commits with title "Package updates"
-     *                        and a body listing those name/from/to lines.
-     */
-    /**
+     * @param  bool  $commit  When true (and craft prints a "Performing N updates:" list, or in
+     *                        remove mode), the action stages everything and commits with a title
+     *                        that reflects what happened ("Package updates" / "Remove <pkg>").
      * @param  list<array{name: string, dev: bool}>|null  $removeSpec  When set, the action runs
      *                                                                  `composer remove [--dev] <pkgs>`
      *                                                                  (grouped by the dev flag) instead
@@ -149,45 +145,14 @@ final class UpdateRepoAction
 
         $previousVersion = self::lockedVersion($repoPath, $package);
 
-        if ($removeSpec !== null) {
-            $packageUpdates = [];
-            foreach (self::groupRemoveSpec($removeSpec) as [$dev, $names]) {
-                $cmd = ['ddev', 'composer', 'remove', '--no-audit', '--no-interaction'];
-                if ($dev) {
-                    $cmd[] = '--dev';
-                }
-                foreach ($names as $n) {
-                    $cmd[] = $n;
-                }
-                $label = 'ddev composer remove' . ($dev ? ' --dev' : '') . ' ' . implode(' ', $names);
-                $proc = self::run($cmd, $repoPath, 1800, $onProgress, $label);
-                if (! $proc->isSuccessful()) {
-                    return self::fail($repoPath, $branch, 'ddev composer remove', $proc);
-                }
-            }
-        } else {
-            if ($craftCommandLine !== null) {
-                $updateCommand = $craftCommandLine;
-                $updateLabel = $craftCommandLine;
-                $failStep = 'ddev craft update';
-            } else {
-                $updateCommand = ['ddev', 'composer', 'update', $updatePackage, '--no-audit'];
-                if ($withAllDependencies) {
-                    $updateCommand[] = '-W';
-                }
-                $updateLabel = 'ddev composer update ' . $updatePackage . ($withAllDependencies ? ' -W' : '');
-                $failStep = 'ddev composer update';
-            }
+        $packageStep = $removeSpec !== null
+            ? self::runRemoveStep($repoPath, $branch, $removeSpec, $onProgress)
+            : self::runUpdateStep($repoPath, $branch, $updatePackage, $withAllDependencies, $craftCommandLine, $onProgress);
 
-            $update = self::run($updateCommand, $repoPath, 1800, $onProgress, $updateLabel);
-            if (! $update->isSuccessful()) {
-                return self::fail($repoPath, $branch, $failStep, $update);
-            }
-
-            $packageUpdates = $craftCommandLine !== null
-                ? self::parseCraftUpdates($update->getOutput() . "\n" . $update->getErrorOutput())
-                : [];
+        if ($packageStep instanceof RepoUpdateResult) {
+            return $packageStep;
         }
+        $packageUpdates = $packageStep;
 
         $prepRan = false;
         $testsFailed = null;
@@ -279,6 +244,77 @@ final class UpdateRepoAction
             packageUpdates: $packageUpdates,
             committed: $committed,
         );
+    }
+
+    /**
+     * Run the composer/craft update step. Returns the parsed package-updates
+     * list on success, or a failure RepoUpdateResult to short-circuit doUpdate.
+     *
+     * @param  callable(string, ?string, ?string): void|null  $onProgress
+     * @return list<array{name: string, from: string, to: string}>|RepoUpdateResult
+     */
+    private static function runUpdateStep(
+        string $repoPath,
+        string $branch,
+        string $updatePackage,
+        bool $withAllDependencies,
+        ?string $craftCommandLine,
+        ?callable $onProgress,
+    ): array|RepoUpdateResult {
+        if ($craftCommandLine !== null) {
+            $updateCommand = $craftCommandLine;
+            $updateLabel = $craftCommandLine;
+            $failStep = 'ddev craft update';
+        } else {
+            $updateCommand = ['ddev', 'composer', 'update', $updatePackage, '--no-audit'];
+            if ($withAllDependencies) {
+                $updateCommand[] = '-W';
+            }
+            $updateLabel = 'ddev composer update ' . $updatePackage . ($withAllDependencies ? ' -W' : '');
+            $failStep = 'ddev composer update';
+        }
+
+        $update = self::run($updateCommand, $repoPath, 1800, $onProgress, $updateLabel);
+        if (! $update->isSuccessful()) {
+            return self::fail($repoPath, $branch, $failStep, $update);
+        }
+
+        return $craftCommandLine !== null
+            ? self::parseCraftUpdates($update->getOutput() . "\n" . $update->getErrorOutput())
+            : [];
+    }
+
+    /**
+     * Run `composer remove [--dev] <pkgs>` once per dev-mode group. Returns an
+     * empty package-updates list on success (the commit message lists the
+     * removed names, not version diffs), or a failure RepoUpdateResult.
+     *
+     * @param  list<array{name: string, dev: bool}>  $removeSpec
+     * @param  callable(string, ?string, ?string): void|null  $onProgress
+     * @return list<array{name: string, from: string, to: string}>|RepoUpdateResult
+     */
+    private static function runRemoveStep(
+        string $repoPath,
+        string $branch,
+        array $removeSpec,
+        ?callable $onProgress,
+    ): array|RepoUpdateResult {
+        foreach (self::groupRemoveSpec($removeSpec) as [$dev, $names]) {
+            $cmd = ['ddev', 'composer', 'remove', '--no-audit', '--no-interaction'];
+            if ($dev) {
+                $cmd[] = '--dev';
+            }
+            foreach ($names as $n) {
+                $cmd[] = $n;
+            }
+            $label = 'ddev composer remove' . ($dev ? ' --dev' : '') . ' ' . implode(' ', $names);
+            $proc = self::run($cmd, $repoPath, 1800, $onProgress, $label);
+            if (! $proc->isSuccessful()) {
+                return self::fail($repoPath, $branch, 'ddev composer remove', $proc);
+            }
+        }
+
+        return [];
     }
 
     /**

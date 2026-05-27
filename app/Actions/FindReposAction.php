@@ -47,52 +47,82 @@ final class FindReposAction
                 $lockData['packages-dev'] ?? [],
             );
 
-            if ($isPattern) {
-                $matched = [];
-                foreach ($packages as $pkg) {
-                    $name = $pkg['name'] ?? null;
-                    if (! is_string($name) || ! fnmatch($package, $name)) {
-                        continue;
-                    }
-                    $matched[$name] = [
-                        'name' => $name,
-                        'version' => (string) ($pkg['version'] ?? 'unknown'),
-                        'isDirect' => self::isDirectDep($dir, $name),
-                    ];
-                }
-                if (empty($matched)) {
-                    continue;
-                }
-                ksort($matched);
-                $matchedList = array_values($matched);
-                $anyDirect = array_reduce($matchedList, fn ($c, $m) => $c || $m['isDirect'], false);
-                $count = count($matchedList);
-                $matches[] = [
-                    'path' => $dir,
-                    'version' => $count === 1 ? $matchedList[0]['version'] : "{$count} packages",
-                    'isDirect' => $anyDirect,
-                    'matchedPackages' => $matchedList,
-                ];
-                continue;
-            }
+            $match = $isPattern
+                ? self::matchPatternInLock($dir, $packages, $package)
+                : self::matchExactInLock($dir, $packages, $package);
 
-            foreach ($packages as $pkg) {
-                if (($pkg['name'] ?? null) !== $package) {
-                    continue;
-                }
-
-                $matches[] = [
-                    'path' => $dir,
-                    'version' => (string) ($pkg['version'] ?? 'unknown'),
-                    'isDirect' => self::isDirectDep($dir, $package),
-                ];
-                break;
+            if ($match !== null) {
+                $matches[] = $match;
             }
         }
 
         usort($matches, fn ($a, $b) => strcmp($a['path'], $b['path']));
 
         return $matches;
+    }
+
+    /**
+     * Collect every locked package whose name matches the wildcard pattern,
+     * tagging each with its direct/transitive state. Returns null when no
+     * locked package matches.
+     *
+     * @param  list<array<string, mixed>>  $packages  Merged packages + packages-dev from composer.lock
+     * @return array{path: string, version: string, isDirect: bool, matchedPackages: list<array{name: string, version: string, isDirect: bool}>}|null
+     */
+    private static function matchPatternInLock(string $dir, array $packages, string $pattern): ?array
+    {
+        $matched = [];
+        foreach ($packages as $pkg) {
+            $name = $pkg['name'] ?? null;
+            if (! is_string($name) || ! fnmatch($pattern, $name)) {
+                continue;
+            }
+            $matched[$name] = [
+                'name' => $name,
+                'version' => (string) ($pkg['version'] ?? 'unknown'),
+                'isDirect' => self::isDirectDep($dir, $name),
+            ];
+        }
+
+        if (empty($matched)) {
+            return null;
+        }
+
+        ksort($matched);
+        $matchedList = array_values($matched);
+        $anyDirect = array_reduce($matchedList, fn ($c, $m) => $c || $m['isDirect'], false);
+        $count = count($matchedList);
+
+        return [
+            'path' => $dir,
+            'version' => $count === 1 ? $matchedList[0]['version'] : "{$count} packages",
+            'isDirect' => $anyDirect,
+            'matchedPackages' => $matchedList,
+        ];
+    }
+
+    /**
+     * Find the first locked entry whose name equals $package and return a
+     * single-package match. Returns null when the package isn't in the lock.
+     *
+     * @param  list<array<string, mixed>>  $packages
+     * @return array{path: string, version: string, isDirect: bool}|null
+     */
+    private static function matchExactInLock(string $dir, array $packages, string $package): ?array
+    {
+        foreach ($packages as $pkg) {
+            if (($pkg['name'] ?? null) !== $package) {
+                continue;
+            }
+
+            return [
+                'path' => $dir,
+                'version' => (string) ($pkg['version'] ?? 'unknown'),
+                'isDirect' => self::isDirectDep($dir, $package),
+            ];
+        }
+
+        return null;
     }
 
     public static function hasPackageInLock(string $repoPath, string $package): bool

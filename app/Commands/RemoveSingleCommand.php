@@ -35,19 +35,12 @@ class RemoveSingleCommand extends Command
         // First spec entry doubles as the "tracked package" for version
         // lookups — irrelevant in remove mode (lockedVersion goes from X to
         // null), but the field is required by update().
-        $tracked = $spec[0]['name'];
-
         $result = UpdateRepoAction::update(
-            $this->argument('repoPath'),
-            $tracked,
-            null,
-            false,
-            null,
-            ! $this->option('stop-ddev'),
-            null,
-            null,
-            true,
-            $spec,
+            repoPath: $this->argument('repoPath'),
+            package: $spec[0]['name'],
+            keepDdevRunning: ! $this->option('stop-ddev'),
+            commit: true,
+            removeSpec: $spec,
         );
 
         $this->output->writeln(json_encode($result->toArray()));

@@ -4,17 +4,11 @@ namespace App\Commands;
 
 use App\Actions\FindReposAction;
 use App\Actions\LastRunStore;
-use App\Actions\OpenInGitKrakenAction;
 use App\Actions\UpdateRepoAction;
 use App\Concerns\ResolvesReposDir;
+use App\Concerns\RunsBulkRepoTasks;
 use App\DataTransferObjects\RepoUpdateResult;
-use Illuminate\Console\OutputStyle;
 use LaravelZero\Framework\Commands\Command;
-use Symfony\Component\Console\Output\ConsoleOutputInterface;
-use Symfony\Component\Console\Output\ConsoleSectionOutput;
-use Symfony\Component\Console\Output\OutputInterface;
-use Symfony\Component\Process\PhpExecutableFinder;
-use Symfony\Component\Process\Process;
 
 use function Laravel\Prompts\confirm;
 use function Laravel\Prompts\info;
@@ -27,6 +21,7 @@ use function Laravel\Prompts\warning;
 class RemoveCommand extends Command
 {
     use ResolvesReposDir;
+    use RunsBulkRepoTasks;
 
     protected $signature = 'remove
         {package? : Composer package name (vendor/name) — wildcards allowed, e.g. laravel-lang/*}
@@ -135,7 +130,7 @@ class RemoveCommand extends Command
         }
 
         $parallel = $this->resolveParallel();
-        $keepDdevRunning = $this->resolveKeepDdevRunning();
+        $keepDdevRunning = $this->resolveKeepDdevRunning('remove');
 
         $mode = $parallel === 1 ? 'sequentially' : "with {$parallel} workers in parallel";
 
@@ -158,16 +153,12 @@ class RemoveCommand extends Command
         }
 
         $updater = fn (array $plan, callable $onProgress) => UpdateRepoAction::update(
-            $plan['path'],
-            $plan['spec'][0]['name'],
-            $onProgress,
-            false,
-            null,
-            $keepDdevRunning,
-            null,
-            null,
-            true,
-            $plan['spec'],
+            repoPath: $plan['path'],
+            package: $plan['spec'][0]['name'],
+            onProgress: $onProgress,
+            keepDdevRunning: $keepDdevRunning,
+            commit: true,
+            removeSpec: $plan['spec'],
         );
 
         $buildCmd = function (array $plan, string $php, string $binary) use ($keepDdevRunning): array {
@@ -181,9 +172,10 @@ class RemoveCommand extends Command
             return $cmd;
         };
 
+        $pathOf = fn (array $plan): string => $plan['path'];
         $results = $parallel === 1
-            ? $this->runSequential($plans, $updater)
-            : $this->runParallel($plans, $parallel, $buildCmd);
+            ? $this->runSequential($plans, $pathOf, $updater)
+            : $this->runParallel($plans, $parallel, $pathOf, $buildCmd);
 
         $allResults = array_merge($preSkipped, $results);
         $this->printSummary($allResults);
@@ -218,7 +210,7 @@ class RemoveCommand extends Command
                 $preSkipped[] = RepoUpdateResult::skipped(
                     $m['path'],
                     $isPattern
-                        ? "no matching package is a direct dependency"
+                        ? 'no matching package is a direct dependency'
                         : "{$package} is only a transitive dependency — composer remove not applicable",
                 );
                 continue;
@@ -238,6 +230,11 @@ class RemoveCommand extends Command
     }
 
     /**
+     * Filter $plans down to the repos the user wants to process. Precedence:
+     *   1. --repo=...  (any number; skips the prompt)
+     *   2. --yes        (selects all $plans non-interactively)
+     *   3. multiselect  (default: nothing selected; Ctrl+A toggles all)
+     *
      * @param  list<array{path: string, spec: list<array{name: string, dev: bool}>}>  $plans
      * @return list<array{path: string, spec: list<array{name: string, dev: bool}>}>
      */
@@ -276,343 +273,6 @@ class RemoveCommand extends Command
         return array_values(array_filter($plans, fn ($p) => isset($set[$p['path']])));
     }
 
-    /**
-     * @param  list<array{path: string}>  $matches
-     * @return list<array<string, mixed>>
-     */
-    protected function applyNameFilter(array $matches): array
-    {
-        $filter = $this->option('filter-name');
-        if (! is_string($filter) || $filter === '') {
-            return $matches;
-        }
-
-        return array_values(array_filter($matches, function ($m) use ($filter) {
-            $composerJson = $m['path'] . '/composer.json';
-            $content = @file_get_contents($composerJson);
-            if ($content === false) {
-                return false;
-            }
-            $data = json_decode($content, true);
-            if (! is_array($data)) {
-                return false;
-            }
-            $name = (string) ($data['name'] ?? '');
-
-            return $name !== '' && str_contains($name, $filter);
-        }));
-    }
-
-    protected function offerOpenPrompt(array $results): void
-    {
-        if ($this->option('no-open')) {
-            return;
-        }
-
-        $candidates = array_values(array_filter(
-            $results,
-            fn (RepoUpdateResult $r) => $r->status !== 'skipped',
-        ));
-        if (empty($candidates)) {
-            return;
-        }
-
-        if ($this->option('open')) {
-            $paths = array_map(fn ($r) => $r->repoPath, $candidates);
-        } elseif ($this->option('yes')) {
-            return;
-        } else {
-            $options = [];
-            foreach ($candidates as $r) {
-                $options[$r->repoPath] = basename($r->repoPath) . OpenCommand::badge($r);
-            }
-            $selected = multiselect(
-                label: sprintf('Open %d repo(s) in GitKraken?', count($candidates)),
-                options: $options,
-                default: array_keys($options),
-                hint: 'Space to toggle · Ctrl+A to select/deselect all · Enter to confirm',
-                required: false,
-            );
-            $paths = array_values(array_map('strval', (array) $selected));
-        }
-
-        if (empty($paths)) {
-            return;
-        }
-
-        $report = OpenInGitKrakenAction::open($paths);
-        info(sprintf('Opened %d repo(s) in GitKraken.', $report['opened']));
-        if (! empty($report['failed'])) {
-            warning(sprintf('Failed to open %d repo(s):', count($report['failed'])));
-            foreach ($report['failed'] as $p) {
-                $this->line("  <fg=yellow>! {$p}</>");
-            }
-        }
-    }
-
-    protected function resolveKeepDdevRunning(): bool
-    {
-        if ($this->option('stop-ddev')) {
-            return false;
-        }
-
-        if ($this->option('yes')) {
-            return true;
-        }
-
-        return confirm(
-            label: 'Keep the ddev project running in each repo after a successful remove?',
-            default: true,
-            hint: 'Choose "no" to run `ddev stop` after each successful remove.',
-        );
-    }
-
-    protected function resolveParallel(): int
-    {
-        $option = $this->option('parallel');
-        if ($option !== null) {
-            return max(1, (int) $option);
-        }
-
-        if ($this->option('yes')) {
-            return 1;
-        }
-
-        $value = text(
-            label: 'How many repos should be processed in parallel? (1 = sequential)',
-            default: '1',
-            validate: fn (string $v) => ctype_digit($v) && (int) $v >= 1
-                ? null
-                : 'Enter an integer >= 1',
-        );
-
-        return (int) $value;
-    }
-
-    /**
-     * @param  list<array{path: string, spec: list<array{name: string, dev: bool}>}>  $plans
-     * @param  callable(array, callable): RepoUpdateResult  $updater
-     * @return list<RepoUpdateResult>
-     */
-    protected function runSequential(array $plans, callable $updater): array
-    {
-        $results = [];
-        $total = count($plans);
-
-        foreach ($plans as $i => $plan) {
-            $n = $i + 1;
-            $name = basename($plan['path']);
-            $this->line('');
-            $this->line("<fg=cyan>━━ [{$n}/{$total}] {$name} ━━</>");
-            $result = $updater($plan, $this->streamingCallback());
-            $results[] = $result;
-            $this->line($this->formatRepoLine($result, $n, $total));
-        }
-
-        return $results;
-    }
-
-    /**
-     * @param  list<array{path: string, spec: list<array{name: string, dev: bool}>}>  $plans
-     * @param  callable(array, string, string): list<string>  $buildCmd
-     * @return list<RepoUpdateResult>
-     */
-    protected function runParallel(array $plans, int $workers, callable $buildCmd): array
-    {
-        $php = (new PhpExecutableFinder())->find() ?: PHP_BINARY;
-        $binary = base_path('package-updater');
-        $consoleOutput = $this->getConsoleOutput();
-        $spinnerFrames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-        $tick = 0;
-
-        $queue = $plans;
-        /** @var list<array{process: Process, repo: string, index: int, section: ?ConsoleSectionOutput, started: float}> $running */
-        $running = [];
-        $results = [];
-        $total = count($plans);
-        $started = 0;
-
-        while (! empty($queue) || ! empty($running)) {
-            while (count($running) < $workers && ! empty($queue)) {
-                $plan = array_shift($queue);
-                $cmd = $buildCmd($plan, $php, $binary);
-                $process = new Process($cmd);
-                $process->setTimeout(3600);
-                $process->start();
-                $started++;
-
-                $section = $consoleOutput?->section();
-                $entry = [
-                    'process' => $process,
-                    'repo' => $plan['path'],
-                    'index' => $started,
-                    'section' => $section,
-                    'started' => microtime(true),
-                ];
-                $running[] = $entry;
-
-                $this->sectionWriteln($entry['section'], $this->formatRunningLine($entry, $spinnerFrames[0], $total));
-            }
-
-            usleep(200_000);
-            $tick++;
-
-            if ($consoleOutput !== null) {
-                $frame = $spinnerFrames[$tick % count($spinnerFrames)];
-                foreach ($running as $entry) {
-                    if ($entry['process']->isRunning() && $entry['section'] !== null) {
-                        $this->sectionOverwrite($entry['section'], $this->formatRunningLine($entry, $frame, $total));
-                    }
-                }
-            }
-
-            foreach ($running as $key => $entry) {
-                if ($entry['process']->isRunning()) {
-                    continue;
-                }
-
-                $result = $this->parseChildOutput($entry['process']->getOutput(), $entry['repo']);
-                $results[] = $result;
-                unset($running[$key]);
-
-                $finalLine = $this->formatRepoLine($result, $entry['index'], $total, microtime(true) - $entry['started']);
-                if ($entry['section'] !== null) {
-                    $this->sectionOverwrite($entry['section'], $finalLine);
-                } else {
-                    $this->line($finalLine);
-                }
-            }
-
-            $running = array_values($running);
-        }
-
-        return $results;
-    }
-
-    protected function sectionWriteln(?ConsoleSectionOutput $section, string $message): void
-    {
-        if ($section === null) {
-            $this->line($message);
-            return;
-        }
-        $section->writeln($this->output->getFormatter()->format($message), OutputInterface::OUTPUT_RAW);
-    }
-
-    protected function sectionOverwrite(ConsoleSectionOutput $section, string $message): void
-    {
-        $section->clear();
-        $section->writeln($this->output->getFormatter()->format($message), OutputInterface::OUTPUT_RAW);
-    }
-
-    /** @param array{repo: string, index: int, started: float} $entry */
-    protected function formatRunningLine(array $entry, string $spinnerFrame, int $total): string
-    {
-        $elapsed = (int) round(microtime(true) - $entry['started']);
-        $name = basename($entry['repo']);
-
-        return sprintf(
-            '  <fg=cyan>%s</> [%d/%d] %s — running (%ds)',
-            $spinnerFrame,
-            $entry['index'],
-            $total,
-            $name,
-            $elapsed,
-        );
-    }
-
-    protected function getConsoleOutput(): ?ConsoleOutputInterface
-    {
-        $output = $this->output;
-        if (! $output instanceof OutputStyle) {
-            return null;
-        }
-
-        $inner = $output->getOutput();
-
-        return $inner instanceof ConsoleOutputInterface ? $inner : null;
-    }
-
-    protected function ensureDdevSshAuth(): void
-    {
-        $process = new Process(['ddev', 'auth', 'ssh']);
-        $process->setTimeout(120);
-
-        try {
-            $process->run();
-        } catch (\Throwable $e) {
-            warning('ddev auth ssh did not run cleanly: ' . $e->getMessage() . '. Continuing — repos needing SSH may fail.');
-            return;
-        }
-
-        if (! $process->isSuccessful()) {
-            warning('ddev auth ssh exited non-zero. Repos requiring SSH-based composer sources may fail.');
-            return;
-        }
-
-        $combined = $process->getOutput() . "\n" . $process->getErrorOutput();
-        $count = preg_match('/(?:Adding|Successfully added)\s+(\d+)\s+SSH private key/i', $combined, $m)
-            ? (int) $m[1]
-            : null;
-
-        info($count !== null
-            ? "Loaded {$count} SSH key(s) into ddev."
-            : 'ddev SSH agent ready.');
-    }
-
-    protected function streamingCallback(): \Closure
-    {
-        return function (string $event, ?string $type, ?string $payload): void {
-            if ($event === 'step-start') {
-                $this->line("  <fg=blue>→</> {$payload}");
-                return;
-            }
-
-            $color = $type === 'err' ? 'yellow' : 'gray';
-            foreach (preg_split("/\r\n|\r|\n/", (string) $payload) as $line) {
-                $line = rtrim($line);
-                if ($line === '') {
-                    continue;
-                }
-                $this->line("    <fg={$color}>{$line}</>");
-            }
-        };
-    }
-
-    protected function parseChildOutput(string $output, string $repo): RepoUpdateResult
-    {
-        $lines = array_filter(array_map('trim', explode("\n", $output)));
-        foreach (array_reverse($lines) as $line) {
-            $decoded = json_decode($line, true);
-            if (is_array($decoded) && isset($decoded['status'], $decoded['repoPath'], $decoded['message'])) {
-                return RepoUpdateResult::fromArray($decoded);
-            }
-        }
-
-        return RepoUpdateResult::failed($repo, 'child process produced no parsable result');
-    }
-
-    protected function formatRepoLine(RepoUpdateResult $result, int $index, int $total, ?float $elapsedSeconds = null): string
-    {
-        $name = basename($result->repoPath);
-        [$icon, $color] = match ($result->status) {
-            'success' => ['✓', 'green'],
-            'skipped' => ['↷', 'yellow'],
-            'failed' => ['✗', 'red'],
-        };
-        $elapsed = $elapsedSeconds !== null ? sprintf(' <fg=gray>(%ds)</>', (int) round($elapsedSeconds)) : '';
-
-        return sprintf(
-            '  <fg=%s>[%d/%d] %s %s</>%s — %s',
-            $color,
-            $index,
-            $total,
-            $icon,
-            $name,
-            $elapsed,
-            $result->message,
-        );
-    }
-
     /** @param list<RepoUpdateResult> $results */
     protected function printSummary(array $results): void
     {
@@ -632,12 +292,12 @@ class RemoveCommand extends Command
             note('Successful removes:');
             table(
                 ['Repo', 'Branch', 'Tests', 'Note'],
-                array_map(function (RepoUpdateResult $r) {
-                    $note = $r->committed
-                        ? '<fg=green>✓ committed</>'
-                        : ($r->hasUncommittedChanges ? 'uncommitted changes' : '-');
-                    return [basename($r->repoPath), $r->branch ?? '-', self::testsCell($r), $note];
-                }, $success),
+                array_map(fn (RepoUpdateResult $r) => [
+                    basename($r->repoPath),
+                    $r->branch ?? '-',
+                    self::testsCell($r),
+                    self::successNote($r),
+                ], $success),
             );
         }
 
@@ -682,5 +342,14 @@ class RemoveCommand extends Command
         }
 
         return '<fg=green>✓ pass</>';
+    }
+
+    private static function successNote(RepoUpdateResult $r): string
+    {
+        if ($r->committed) {
+            return '<fg=green>✓ committed</>';
+        }
+
+        return $r->hasUncommittedChanges ? 'uncommitted changes' : '-';
     }
 }

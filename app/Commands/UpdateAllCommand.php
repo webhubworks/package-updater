@@ -4,17 +4,11 @@ namespace App\Commands;
 
 use App\Actions\FindReposAction;
 use App\Actions\LastRunStore;
-use App\Actions\OpenInGitKrakenAction;
 use App\Actions\UpdateRepoAction;
 use App\Concerns\ResolvesReposDir;
+use App\Concerns\RunsBulkRepoTasks;
 use App\DataTransferObjects\RepoUpdateResult;
-use Illuminate\Console\OutputStyle;
 use LaravelZero\Framework\Commands\Command;
-use Symfony\Component\Console\Output\ConsoleOutputInterface;
-use Symfony\Component\Console\Output\ConsoleSectionOutput;
-use Symfony\Component\Console\Output\OutputInterface;
-use Symfony\Component\Process\PhpExecutableFinder;
-use Symfony\Component\Process\Process;
 
 use function Laravel\Prompts\confirm;
 use function Laravel\Prompts\info;
@@ -27,6 +21,7 @@ use function Laravel\Prompts\warning;
 class UpdateAllCommand extends Command
 {
     use ResolvesReposDir;
+    use RunsBulkRepoTasks;
 
     protected $signature = 'update:all
         {package? : Composer package name (vendor/name)}
@@ -236,9 +231,10 @@ class UpdateAllCommand extends Command
             return $cmd;
         };
 
+        $pathOf = fn (string $repo): string => $repo;
         $results = $parallel === 1
-            ? $this->runSequential($repos, $updater)
-            : $this->runParallel($repos, $parallel, $buildCmd);
+            ? $this->runSequential($repos, $pathOf, $updater)
+            : $this->runParallel($repos, $parallel, $pathOf, $buildCmd);
 
         $allResults = array_merge($preSkipped, $results);
         $this->printSummary($allResults, $targetVersion);
@@ -267,63 +263,6 @@ class UpdateAllCommand extends Command
             default: false,
             hint: 'Without -W, composer updates only the named package and refuses if any of its deps would also need to move.',
         );
-    }
-
-    /**
-     * Offer to open every non-skipped repo (success or failure) in GitKraken
-     * (one tab per repo via the gitkraken:// URL scheme). Successes are worth
-     * a tab so the user can review the commit / push it; failures so they can
-     * investigate. The default selection is all candidates. Skipped if
-     * --no-open is set, or if --yes is set without an explicit --open.
-     *
-     * @param  list<RepoUpdateResult>  $results
-     */
-    protected function offerOpenPrompt(array $results): void
-    {
-        if ($this->option('no-open')) {
-            return;
-        }
-
-        $candidates = array_values(array_filter(
-            $results,
-            fn (RepoUpdateResult $r) => $r->status !== 'skipped',
-        ));
-        if (empty($candidates)) {
-            return;
-        }
-
-        if ($this->option('open')) {
-            $paths = array_map(fn ($r) => $r->repoPath, $candidates);
-        } elseif ($this->option('yes')) {
-            // Non-interactive run without an explicit --open: don't open.
-            return;
-        } else {
-            $options = [];
-            foreach ($candidates as $r) {
-                $options[$r->repoPath] = basename($r->repoPath) . OpenCommand::badge($r);
-            }
-            $selected = multiselect(
-                label: sprintf('Open %d repo(s) in GitKraken?', count($candidates)),
-                options: $options,
-                default: array_keys($options),
-                hint: 'Space to toggle · Ctrl+A to select/deselect all · Enter to confirm',
-                required: false,
-            );
-            $paths = array_values(array_map('strval', (array) $selected));
-        }
-
-        if (empty($paths)) {
-            return;
-        }
-
-        $report = OpenInGitKrakenAction::open($paths);
-        info(sprintf('Opened %d repo(s) in GitKraken.', $report['opened']));
-        if (! empty($report['failed'])) {
-            warning(sprintf('Failed to open %d repo(s):', count($report['failed'])));
-            foreach ($report['failed'] as $p) {
-                $this->line("  <fg=yellow>! {$p}</>");
-            }
-        }
     }
 
     /**
@@ -377,36 +316,6 @@ class UpdateAllCommand extends Command
         $set = array_flip(array_map('strval', (array) $selected));
 
         return array_values(array_filter($matches, fn ($m) => isset($set[$m['path']])));
-    }
-
-    /**
-     * Filter matches by substring match against the repo's composer.json "name"
-     * field. No-op when --filter-name is not set.
-     *
-     * @param  list<array{path: string, version: string, ...}>  $matches
-     * @return list<array<string, mixed>>
-     */
-    protected function applyNameFilter(array $matches): array
-    {
-        $filter = $this->option('filter-name');
-        if (! is_string($filter) || $filter === '') {
-            return $matches;
-        }
-
-        return array_values(array_filter($matches, function ($m) use ($filter) {
-            $composerJson = $m['path'] . '/composer.json';
-            $content = @file_get_contents($composerJson);
-            if ($content === false) {
-                return false;
-            }
-            $data = json_decode($content, true);
-            if (! is_array($data)) {
-                return false;
-            }
-            $name = (string) ($data['name'] ?? '');
-
-            return $name !== '' && str_contains($name, $filter);
-        }));
     }
 
     protected function resolveTargetVersion(): ?string
@@ -577,288 +486,6 @@ class UpdateAllCommand extends Command
         $normalize = static fn (string $v) => ltrim(trim($v), 'vV');
 
         return $normalize($a) === $normalize($b);
-    }
-
-    protected function resolveKeepDdevRunning(): bool
-    {
-        if ($this->option('stop-ddev')) {
-            return false;
-        }
-
-        if ($this->option('yes')) {
-            return true;
-        }
-
-        return confirm(
-            label: 'Keep the ddev project running in each repo after a successful update?',
-            default: true,
-            hint: 'Choose "no" to run `ddev stop` after each successful update.',
-        );
-    }
-
-    protected function resolveParallel(): int
-    {
-        $option = $this->option('parallel');
-        if ($option !== null) {
-            return max(1, (int) $option);
-        }
-
-        if ($this->option('yes')) {
-            return 1;
-        }
-
-        $value = text(
-            label: 'How many repos should be processed in parallel? (1 = sequential)',
-            default: '1',
-            validate: fn (string $v) => ctype_digit($v) && (int) $v >= 1
-                ? null
-                : 'Enter an integer >= 1',
-        );
-
-        return (int) $value;
-    }
-
-    /**
-     * @param  list<string>  $repos
-     * @param  callable(string $repoPath, callable $onProgress): RepoUpdateResult  $updater
-     * @return list<RepoUpdateResult>
-     */
-    protected function runSequential(array $repos, callable $updater): array
-    {
-        $results = [];
-        $total = count($repos);
-
-        foreach ($repos as $i => $repo) {
-            $n = $i + 1;
-            $name = basename($repo);
-            $this->line('');
-            $this->line("<fg=cyan>━━ [{$n}/{$total}] {$name} ━━</>");
-            $result = $updater($repo, $this->streamingCallback());
-            $results[] = $result;
-            $this->printRepoLine($result, $n, $total);
-        }
-
-        return $results;
-    }
-
-    /**
-     * @param  list<string>  $repos
-     * @param  callable(string $repoPath, string $php, string $binary): list<string>  $buildCmd
-     * @return list<RepoUpdateResult>
-     */
-    protected function runParallel(array $repos, int $workers, callable $buildCmd): array
-    {
-        $php = (new PhpExecutableFinder())->find() ?: PHP_BINARY;
-        $binary = base_path('package-updater');
-        $consoleOutput = $this->getConsoleOutput();
-        $spinnerFrames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-        $tick = 0;
-
-        $queue = $repos;
-        /** @var list<array{process: Process, repo: string, index: int, section: ?ConsoleSectionOutput, started: float}> $running */
-        $running = [];
-        $results = [];
-        $total = count($repos);
-        $started = 0;
-
-        while (! empty($queue) || ! empty($running)) {
-            while (count($running) < $workers && ! empty($queue)) {
-                $repo = array_shift($queue);
-                $cmd = $buildCmd($repo, $php, $binary);
-                $process = new Process($cmd);
-                $process->setTimeout(3600);
-                $process->start();
-                $started++;
-
-                $section = $consoleOutput?->section();
-                $entry = [
-                    'process' => $process,
-                    'repo' => $repo,
-                    'index' => $started,
-                    'section' => $section,
-                    'started' => microtime(true),
-                ];
-                $running[] = $entry;
-
-                $this->sectionWriteln($entry['section'], $this->formatRunningLine($entry, $spinnerFrames[0], $total));
-            }
-
-            usleep(200_000);
-            $tick++;
-
-            if ($consoleOutput !== null) {
-                $frame = $spinnerFrames[$tick % count($spinnerFrames)];
-                foreach ($running as $entry) {
-                    if ($entry['process']->isRunning() && $entry['section'] !== null) {
-                        $this->sectionOverwrite($entry['section'], $this->formatRunningLine($entry, $frame, $total));
-                    }
-                }
-            }
-
-            foreach ($running as $key => $entry) {
-                if ($entry['process']->isRunning()) {
-                    continue;
-                }
-
-                $result = $this->parseChildOutput($entry['process']->getOutput(), $entry['repo']);
-                $results[] = $result;
-                unset($running[$key]);
-
-                $finalLine = $this->formatRepoLine($result, $entry['index'], $total, microtime(true) - $entry['started']);
-                if ($entry['section'] !== null) {
-                    $this->sectionOverwrite($entry['section'], $finalLine);
-                } else {
-                    $this->line($finalLine);
-                }
-            }
-
-            $running = array_values($running);
-        }
-
-        return $results;
-    }
-
-    /**
-     * Write a freshly-formatted message into a console section. We pre-format
-     * the message through the parent OutputStyle's formatter and pass
-     * OUTPUT_RAW to the section, so that the rendered ANSI codes (or stripped
-     * tags, when not decorated) always reach the section's doWrite — bypassing
-     * any path where the section's own formatter mis-handles `<fg=…>` tags
-     * and prints them literally. Falls back to $this->line() when the section
-     * is null (non-TTY/parallel disabled).
-     */
-    protected function sectionWriteln(?ConsoleSectionOutput $section, string $message): void
-    {
-        if ($section === null) {
-            $this->line($message);
-            return;
-        }
-        $section->writeln($this->output->getFormatter()->format($message), OutputInterface::OUTPUT_RAW);
-    }
-
-    /**
-     * Re-render an existing section line in place. Equivalent to
-     * $section->overwrite(...) but pre-formats the message so the ANSI codes
-     * reach doWrite intact (see sectionWriteln for the rationale).
-     */
-    protected function sectionOverwrite(ConsoleSectionOutput $section, string $message): void
-    {
-        $section->clear();
-        $section->writeln($this->output->getFormatter()->format($message), OutputInterface::OUTPUT_RAW);
-    }
-
-    /** @param array{repo: string, index: int, started: float} $entry */
-    protected function formatRunningLine(array $entry, string $spinnerFrame, int $total): string
-    {
-        $elapsed = (int) round(microtime(true) - $entry['started']);
-        $name = basename($entry['repo']);
-
-        return sprintf(
-            '  <fg=cyan>%s</> [%d/%d] %s — running (%ds)',
-            $spinnerFrame,
-            $entry['index'],
-            $total,
-            $name,
-            $elapsed,
-        );
-    }
-
-    protected function getConsoleOutput(): ?ConsoleOutputInterface
-    {
-        $output = $this->output;
-        if (! $output instanceof OutputStyle) {
-            return null;
-        }
-
-        $inner = $output->getOutput();
-
-        return $inner instanceof ConsoleOutputInterface ? $inner : null;
-    }
-
-    protected function ensureDdevSshAuth(): void
-    {
-        $process = new Process(['ddev', 'auth', 'ssh']);
-        $process->setTimeout(120);
-
-        try {
-            $process->run();
-        } catch (\Throwable $e) {
-            warning('ddev auth ssh did not run cleanly: ' . $e->getMessage() . '. Continuing — repos needing SSH may fail. If your SSH keys have passphrases, run `ddev auth ssh` manually first then re-run with --no-ssh-auth.');
-            return;
-        }
-
-        if (! $process->isSuccessful()) {
-            warning('ddev auth ssh exited non-zero. Repos requiring SSH-based composer sources may fail.');
-            return;
-        }
-
-        $combined = $process->getOutput() . "\n" . $process->getErrorOutput();
-        $count = preg_match('/(?:Adding|Successfully added)\s+(\d+)\s+SSH private key/i', $combined, $m)
-            ? (int) $m[1]
-            : null;
-
-        info($count !== null
-            ? "Loaded {$count} SSH key(s) into ddev."
-            : 'ddev SSH agent ready.');
-    }
-
-    protected function streamingCallback(): \Closure
-    {
-        return function (string $event, ?string $type, ?string $payload): void {
-            if ($event === 'step-start') {
-                $this->line("  <fg=blue>→</> {$payload}");
-                return;
-            }
-
-            $color = $type === 'err' ? 'yellow' : 'gray';
-            foreach (preg_split("/\r\n|\r|\n/", (string) $payload) as $line) {
-                $line = rtrim($line);
-                if ($line === '') {
-                    continue;
-                }
-                $this->line("    <fg={$color}>{$line}</>");
-            }
-        };
-    }
-
-    protected function parseChildOutput(string $output, string $repo): RepoUpdateResult
-    {
-        $lines = array_filter(array_map('trim', explode("\n", $output)));
-        foreach (array_reverse($lines) as $line) {
-            $decoded = json_decode($line, true);
-            if (is_array($decoded) && isset($decoded['status'], $decoded['repoPath'], $decoded['message'])) {
-                return RepoUpdateResult::fromArray($decoded);
-            }
-        }
-
-        return RepoUpdateResult::failed($repo, 'child process produced no parsable result');
-    }
-
-    protected function printRepoLine(RepoUpdateResult $result, int $done, int $total): void
-    {
-        $this->line($this->formatRepoLine($result, $done, $total));
-    }
-
-    protected function formatRepoLine(RepoUpdateResult $result, int $index, int $total, ?float $elapsedSeconds = null): string
-    {
-        $name = basename($result->repoPath);
-        [$icon, $color] = match ($result->status) {
-            'success' => ['✓', 'green'],
-            'skipped' => ['↷', 'yellow'],
-            'failed' => ['✗', 'red'],
-        };
-        $elapsed = $elapsedSeconds !== null ? sprintf(' <fg=gray>(%ds)</>', (int) round($elapsedSeconds)) : '';
-
-        return sprintf(
-            '  <fg=%s>[%d/%d] %s %s</>%s — %s',
-            $color,
-            $index,
-            $total,
-            $icon,
-            $name,
-            $elapsed,
-            $result->message,
-        );
     }
 
     /** @param  list<RepoUpdateResult>  $results */
