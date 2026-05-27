@@ -188,22 +188,38 @@ final class FindReposAction
 
     private static function isDirectDep(string $repoPath, string $package): bool
     {
+        return self::requireType($repoPath, $package) !== null;
+    }
+
+    /**
+     * Returns 'require' or 'require-dev' when the repo declares $package
+     * directly, null when it isn't a direct dep.
+     */
+    public static function requireType(string $repoPath, string $package): ?string
+    {
         $composerJson = $repoPath . '/composer.json';
         if (! is_file($composerJson)) {
-            return false;
+            return null;
         }
 
         $content = @file_get_contents($composerJson);
         if ($content === false) {
-            return false;
+            return null;
         }
 
         $data = json_decode($content, true);
         if (! is_array($data)) {
-            return false;
+            return null;
         }
 
-        return isset($data['require'][$package]) || isset($data['require-dev'][$package]);
+        if (isset($data['require'][$package])) {
+            return 'require';
+        }
+        if (isset($data['require-dev'][$package])) {
+            return 'require-dev';
+        }
+
+        return null;
     }
 
     /**

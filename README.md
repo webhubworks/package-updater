@@ -84,6 +84,24 @@ repo. Wildcards skip the target-version and transitive-parent prompts
 and always pass `-W` (composer almost always needs it to bump siblings
 together). Quote the pattern in your shell so it isn't glob-expanded.
 
+### `remove`
+
+Bulk counterpart for removing a package. Same scan as `update:all`,
+including wildcard support (`pu remove 'laravel-lang/*'`). Pre-skips
+repos where the package is only a transitive dependency (composer
+remove only works on declared deps) and pre-skips dirty repos.
+For each remaining repo it detects whether the package is in `require`
+or `require-dev` and groups the removals so composer is called with
+`--dev` for the dev-only ones (plain for the rest). On success it
+commits the change with title `Remove <package>` (or
+`Remove N packages` for wildcards) and a body listing the removed
+names.
+
+```bash
+pu remove vendor/foo                   # exact name
+pu remove 'laravel-lang/*' --dry-run   # preview which packages would be removed
+```
+
 ### `update:craft`
 
 Craft-aware variant. Same flow, but:

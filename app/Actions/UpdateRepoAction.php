@@ -33,6 +33,15 @@ final class UpdateRepoAction
      *                        action stages everything and commits with title "Package updates"
      *                        and a body listing those name/from/to lines.
      */
+    /**
+     * @param  list<array{name: string, dev: bool}>|null  $removeSpec  When set, the action runs
+     *                                                                  `composer remove [--dev] <pkgs>`
+     *                                                                  (grouped by the dev flag) instead
+     *                                                                  of `composer update`. The commit
+     *                                                                  message becomes "Remove <pkg>" or
+     *                                                                  "Remove N packages" with a body
+     *                                                                  listing the removed names.
+     */
     public static function update(
         string $repoPath,
         string $package,
@@ -43,10 +52,11 @@ final class UpdateRepoAction
         ?string $craftCommandLine = null,
         ?string $crawlerCommandLine = null,
         bool $commit = false,
+        ?array $removeSpec = null,
     ): RepoUpdateResult {
         $transcriptPath = self::openTranscript($repoPath);
         try {
-            $result = self::doUpdate($repoPath, $package, $onProgress, $withAllDependencies, $updatePackage, $keepDdevRunning, $craftCommandLine, $crawlerCommandLine, $commit);
+            $result = self::doUpdate($repoPath, $package, $onProgress, $withAllDependencies, $updatePackage, $keepDdevRunning, $craftCommandLine, $crawlerCommandLine, $commit, $removeSpec);
         } finally {
             self::closeTranscript();
         }
@@ -71,10 +81,11 @@ final class UpdateRepoAction
         ?string $craftCommandLine,
         ?string $crawlerCommandLine,
         bool $commit,
+        ?array $removeSpec = null,
     ): RepoUpdateResult {
         $updatePackage = $updatePackage ?? $package;
 
-        if ($craftCommandLine === null && $updatePackage !== $package && self::lockedVersion($repoPath, $updatePackage) === null) {
+        if ($removeSpec === null && $craftCommandLine === null && $updatePackage !== $package && self::lockedVersion($repoPath, $updatePackage) === null) {
             return RepoUpdateResult::skipped(
                 $repoPath,
                 "{$updatePackage} not present in composer.lock",
@@ -138,27 +149,45 @@ final class UpdateRepoAction
 
         $previousVersion = self::lockedVersion($repoPath, $package);
 
-        if ($craftCommandLine !== null) {
-            $updateCommand = $craftCommandLine;
-            $updateLabel = $craftCommandLine;
-            $failStep = 'ddev craft update';
-        } else {
-            $updateCommand = ['ddev', 'composer', 'update', $updatePackage, '--no-audit'];
-            if ($withAllDependencies) {
-                $updateCommand[] = '-W';
+        if ($removeSpec !== null) {
+            $packageUpdates = [];
+            foreach (self::groupRemoveSpec($removeSpec) as [$dev, $names]) {
+                $cmd = ['ddev', 'composer', 'remove', '--no-audit', '--no-interaction'];
+                if ($dev) {
+                    $cmd[] = '--dev';
+                }
+                foreach ($names as $n) {
+                    $cmd[] = $n;
+                }
+                $label = 'ddev composer remove' . ($dev ? ' --dev' : '') . ' ' . implode(' ', $names);
+                $proc = self::run($cmd, $repoPath, 1800, $onProgress, $label);
+                if (! $proc->isSuccessful()) {
+                    return self::fail($repoPath, $branch, 'ddev composer remove', $proc);
+                }
             }
-            $updateLabel = 'ddev composer update ' . $updatePackage . ($withAllDependencies ? ' -W' : '');
-            $failStep = 'ddev composer update';
-        }
+        } else {
+            if ($craftCommandLine !== null) {
+                $updateCommand = $craftCommandLine;
+                $updateLabel = $craftCommandLine;
+                $failStep = 'ddev craft update';
+            } else {
+                $updateCommand = ['ddev', 'composer', 'update', $updatePackage, '--no-audit'];
+                if ($withAllDependencies) {
+                    $updateCommand[] = '-W';
+                }
+                $updateLabel = 'ddev composer update ' . $updatePackage . ($withAllDependencies ? ' -W' : '');
+                $failStep = 'ddev composer update';
+            }
 
-        $update = self::run($updateCommand, $repoPath, 1800, $onProgress, $updateLabel);
-        if (! $update->isSuccessful()) {
-            return self::fail($repoPath, $branch, $failStep, $update);
-        }
+            $update = self::run($updateCommand, $repoPath, 1800, $onProgress, $updateLabel);
+            if (! $update->isSuccessful()) {
+                return self::fail($repoPath, $branch, $failStep, $update);
+            }
 
-        $packageUpdates = $craftCommandLine !== null
-            ? self::parseCraftUpdates($update->getOutput() . "\n" . $update->getErrorOutput())
-            : [];
+            $packageUpdates = $craftCommandLine !== null
+                ? self::parseCraftUpdates($update->getOutput() . "\n" . $update->getErrorOutput())
+                : [];
+        }
 
         $prepRan = false;
         $testsFailed = null;
@@ -223,7 +252,11 @@ final class UpdateRepoAction
 
         $committed = false;
         if ($commit) {
-            $committed = self::commitPackageUpdates($repoPath, $packageUpdates, $onProgress);
+            if ($removeSpec !== null) {
+                $committed = self::commitRemovals($repoPath, $removeSpec, $onProgress);
+            } else {
+                $committed = self::commitPackageUpdates($repoPath, $packageUpdates, $onProgress);
+            }
         }
 
         $afterStatus = self::run(['git', 'status', '--porcelain'], $repoPath, 60, null, '', stream: false);
@@ -291,6 +324,78 @@ final class UpdateRepoAction
         );
 
         return $commit->isSuccessful();
+    }
+
+    /**
+     * Stage + commit a `composer remove` change with title "Remove <pkg>"
+     * (or "Remove N packages" for multiple) and a bullet body listing each
+     * removed name. Returns true on a successful commit; false when there
+     * is nothing to commit or git fails.
+     *
+     * @param  list<array{name: string, dev: bool}>  $removeSpec
+     * @param  callable(string, ?string, ?string): void|null  $onProgress
+     */
+    private static function commitRemovals(string $repoPath, array $removeSpec, ?callable $onProgress): bool
+    {
+        $status = self::run(['git', 'status', '--porcelain'], $repoPath, 60, null, '', stream: false);
+        if (! $status->isSuccessful() || trim($status->getOutput()) === '') {
+            return false;
+        }
+
+        $add = self::run(['git', 'add', '-A'], $repoPath, 120, $onProgress, 'git add -A');
+        if (! $add->isSuccessful()) {
+            return false;
+        }
+
+        $names = array_map(fn (array $p) => $p['name'], $removeSpec);
+        $title = count($names) === 1
+            ? "Remove {$names[0]}"
+            : sprintf('Remove %d packages', count($names));
+        $body = implode("\n", array_map(
+            fn (array $p) => '- ' . $p['name'] . ($p['dev'] ? ' (dev)' : ''),
+            $removeSpec,
+        ));
+
+        $commit = self::run(
+            ['git', 'commit', '-m', $title, '-m', $body],
+            $repoPath,
+            120,
+            $onProgress,
+            'git commit',
+        );
+
+        return $commit->isSuccessful();
+    }
+
+    /**
+     * Group a remove spec into [dev, [names...]] pairs so composer can be
+     * called once for each --dev mode. Prod packages come first so the
+     * working tree shows them before dev removals when the commit lands.
+     *
+     * @param  list<array{name: string, dev: bool}>  $spec
+     * @return list<array{0: bool, 1: list<string>}>
+     */
+    private static function groupRemoveSpec(array $spec): array
+    {
+        $prod = [];
+        $dev = [];
+        foreach ($spec as $entry) {
+            if ($entry['dev']) {
+                $dev[] = $entry['name'];
+            } else {
+                $prod[] = $entry['name'];
+            }
+        }
+
+        $groups = [];
+        if (! empty($prod)) {
+            $groups[] = [false, $prod];
+        }
+        if (! empty($dev)) {
+            $groups[] = [true, $dev];
+        }
+
+        return $groups;
     }
 
     /**
