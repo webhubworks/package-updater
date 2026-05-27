@@ -62,12 +62,14 @@ class UpdateAllCommand extends Command
 
         $package = $this->argument('package') ?: text(
             label: 'Which Composer package should be updated?',
-            placeholder: 'webhubworks/panoptikum-cell',
+            placeholder: 'webhubworks/panoptikum-cell or laravel-lang/*',
             required: true,
             validate: fn (string $value) => str_contains($value, '/')
                 ? null
-                : 'Use vendor/package format',
+                : 'Use vendor/package format (wildcards allowed, e.g. laravel-lang/*)',
         );
+
+        $isPattern = FindReposAction::isPattern($package);
 
         info("Scanning {$reposDir} for repos that require {$package}...");
         $matches = FindReposAction::find($reposDir, $package);
@@ -97,27 +99,48 @@ class UpdateAllCommand extends Command
         ));
 
         if ($this->option('dry-run')) {
-            table(
-                ['Repo', "Locked {$package} version", 'Dep type'],
-                array_map(fn ($m) => [
-                    basename($m['path']),
-                    $m['version'],
-                    $m['isDirect'] ? 'direct' : 'transitive',
-                ], $matches),
-            );
+            if ($isPattern) {
+                $rows = [];
+                foreach ($matches as $m) {
+                    foreach ($m['matchedPackages'] ?? [] as $pkg) {
+                        $rows[] = [
+                            basename($m['path']),
+                            $pkg['name'],
+                            $pkg['version'],
+                            $pkg['isDirect'] ? 'direct' : 'transitive',
+                        ];
+                    }
+                }
+                table(['Repo', 'Package', 'Locked version', 'Dep type'], $rows);
+            } else {
+                table(
+                    ['Repo', "Locked {$package} version", 'Dep type'],
+                    array_map(fn ($m) => [
+                        basename($m['path']),
+                        $m['version'],
+                        $m['isDirect'] ? 'direct' : 'transitive',
+                    ], $matches),
+                );
+            }
             note('Dry run — no changes were made. Note: versions reflect each repo\'s current local composer.lock and may be stale.');
             return self::SUCCESS;
         }
 
-        $rawTarget = $this->resolveTargetVersion();
-        [$matches, $preSkipped, $targetVersion] = $this->applyTargetVersionFilter($matches, $rawTarget);
+        if ($isPattern) {
+            $rawTarget = null;
+            $targetVersion = null;
+            $preSkipped = [];
+        } else {
+            $rawTarget = $this->resolveTargetVersion();
+            [$matches, $preSkipped, $targetVersion] = $this->applyTargetVersionFilter($matches, $rawTarget);
 
-        if (empty($matches)) {
-            $this->printSummary($preSkipped, $targetVersion);
-            return self::SUCCESS;
+            if (empty($matches)) {
+                $this->printSummary($preSkipped, $targetVersion);
+                return self::SUCCESS;
+            }
         }
 
-        $updatePackage = $this->resolveUpdatePackage($matches, $package);
+        $updatePackage = $isPattern ? $package : $this->resolveUpdatePackage($matches, $package);
 
         if ($updatePackage !== $package) {
             $applicable = [];
@@ -152,7 +175,9 @@ class UpdateAllCommand extends Command
             }
         }
 
-        $withAllDependencies = $this->resolveWithAllDependencies($updatePackage, $package);
+        $withAllDependencies = $isPattern
+            ? true
+            : $this->resolveWithAllDependencies($updatePackage, $package);
 
         $matches = $this->resolveRepoSelection($matches);
         if (empty($matches)) {
@@ -328,7 +353,17 @@ class UpdateAllCommand extends Command
 
         $options = [];
         foreach ($matches as $m) {
-            $options[$m['path']] = basename($m['path']) . ' (' . $m['version'] . ')';
+            $label = basename($m['path']) . ' (' . $m['version'] . ')';
+            if (isset($m['matchedPackages']) && count($m['matchedPackages']) > 1) {
+                $names = array_map(fn ($p) => $p['name'], $m['matchedPackages']);
+                $preview = array_slice($names, 0, 3);
+                $suffix = implode(', ', $preview);
+                if (count($names) > 3) {
+                    $suffix .= ', ...';
+                }
+                $label = basename($m['path']) . ' (' . $m['version'] . ': ' . $suffix . ')';
+            }
+            $options[$m['path']] = $label;
         }
 
         $selected = multiselect(

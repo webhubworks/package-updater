@@ -77,6 +77,13 @@ to force across majors).
 `pu update:all vendor/foo --filter-name=mvb` only considers repos with
 `mvb` in their composer name.
 
+The package argument also accepts a wildcard — e.g.
+`pu update:all 'laravel-lang/*'` matches every locked package under
+that vendor prefix and runs `composer update laravel-lang/* -W` per
+repo. Wildcards skip the target-version and transitive-parent prompts
+and always pass `-W` (composer almost always needs it to bump siblings
+together). Quote the pattern in your shell so it isn't glob-expanded.
+
 ### `update:craft`
 
 Craft-aware variant. Same flow, but:

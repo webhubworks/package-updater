@@ -4,16 +4,28 @@ namespace App\Actions;
 
 final class FindReposAction
 {
+    public static function isPattern(string $package): bool
+    {
+        return str_contains($package, '*');
+    }
+
     /**
      * Returns matches under $reposDir whose composer.lock lists $package
      * (in either packages or packages-dev), along with the locked version
      * and whether $package is a direct dependency (declared in composer.json)
      * or a transitive one.
      *
-     * @return list<array{path: string, version: string, isDirect: bool}>
+     * When $package contains a wildcard (e.g. `laravel-lang/*`), every locked
+     * package whose name matches the pattern is collected into
+     * `matchedPackages`. `version` then carries a human summary like
+     * "3 packages" for display, and `isDirect` is true if any matched package
+     * is a direct dep.
+     *
+     * @return list<array{path: string, version: string, isDirect: bool, matchedPackages?: list<array{name: string, version: string, isDirect: bool}>}>
      */
     public static function find(string $reposDir, string $package): array
     {
+        $isPattern = self::isPattern($package);
         $matches = [];
         $dirs = self::collectRepoDirs(rtrim($reposDir, '/'));
 
@@ -34,6 +46,35 @@ final class FindReposAction
                 $lockData['packages'] ?? [],
                 $lockData['packages-dev'] ?? [],
             );
+
+            if ($isPattern) {
+                $matched = [];
+                foreach ($packages as $pkg) {
+                    $name = $pkg['name'] ?? null;
+                    if (! is_string($name) || ! fnmatch($package, $name)) {
+                        continue;
+                    }
+                    $matched[$name] = [
+                        'name' => $name,
+                        'version' => (string) ($pkg['version'] ?? 'unknown'),
+                        'isDirect' => self::isDirectDep($dir, $name),
+                    ];
+                }
+                if (empty($matched)) {
+                    continue;
+                }
+                ksort($matched);
+                $matchedList = array_values($matched);
+                $anyDirect = array_reduce($matchedList, fn ($c, $m) => $c || $m['isDirect'], false);
+                $count = count($matchedList);
+                $matches[] = [
+                    'path' => $dir,
+                    'version' => $count === 1 ? $matchedList[0]['version'] : "{$count} packages",
+                    'isDirect' => $anyDirect,
+                    'matchedPackages' => $matchedList,
+                ];
+                continue;
+            }
 
             foreach ($packages as $pkg) {
                 if (($pkg['name'] ?? null) !== $package) {
