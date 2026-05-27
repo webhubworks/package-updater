@@ -123,21 +123,20 @@ class UpdateCommand extends Command
         $prep = $this->runComposer($cmd, $cwd, $label);
         $logPath = $this->writeLog($cwd, $cmd, $prep, 'pu-prep');
 
-        $combined = $prep->getOutput()."\n".$prep->getErrorOutput();
-        $summary = UpdateRepoAction::parseTestSummary($combined);
-        $phpstanErrors = UpdateRepoAction::parsePhpstanErrors($combined);
+        $outcome = UpdateRepoAction::summarizePrep($prep);
 
         $this->newLine();
-        if ($summary === null) {
+        if ($outcome['testsSummary'] === null) {
             $this->line($prep->isSuccessful()
                 ? '  <fg=gray>Prep ran but no test summary detected.</>'
                 : "  <fg=red;options=bold>✗ Prep failed (exit {$prep->getExitCode()}); no test summary detected.</>");
-        } elseif ($summary['failed'] > 0) {
-            $this->line("  <fg=red;options=bold>✗ Tests: {$summary['summary']}</>");
+        } elseif (($outcome['testsFailed'] ?? 0) > 0) {
+            $this->line("  <fg=red;options=bold>✗ Tests: {$outcome['testsSummary']}</>");
         } else {
-            $this->line("  <fg=green>✓ Tests: {$summary['summary']}</>");
+            $this->line("  <fg=green>✓ Tests: {$outcome['testsSummary']}</>");
         }
 
+        $phpstanErrors = $outcome['phpstanErrors'];
         if ($phpstanErrors !== null && $phpstanErrors > 0) {
             $this->line(sprintf(
                 '  <fg=red;options=bold>✗ PHPStan: %d error%s</>',

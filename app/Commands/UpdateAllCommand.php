@@ -570,12 +570,7 @@ class UpdateAllCommand extends Command
                 $name = basename($r->repoPath);
                 $summary = $r->testsSummary ?? 'no test summary';
                 $this->line("  <fg=red;options=bold>✗ {$name}</> — {$summary}");
-                if ($r->prepLogPath !== null) {
-                    $this->line("    <fg=gray>log:</> {$r->prepLogPath}");
-                }
-                if ($r->transcriptPath !== null) {
-                    $this->line("    <fg=gray>transcript:</> {$r->transcriptPath}");
-                }
+                $this->printRepoTrailer($r->prepLogPath, $r->transcriptPath);
             }
         }
 
@@ -593,12 +588,7 @@ class UpdateAllCommand extends Command
                 $count = (int) $r->phpstanErrors;
                 $label = $count === 1 ? 'error' : 'errors';
                 $this->line("  <fg=red;options=bold>✗ {$name}</> — PHPStan: {$count} {$label}");
-                if ($r->prepLogPath !== null) {
-                    $this->line("    <fg=gray>log:</> {$r->prepLogPath}");
-                }
-                if ($r->transcriptPath !== null) {
-                    $this->line("    <fg=gray>transcript:</> {$r->transcriptPath}");
-                }
+                $this->printRepoTrailer($r->prepLogPath, $r->transcriptPath);
             }
         }
 
@@ -614,12 +604,7 @@ class UpdateAllCommand extends Command
             foreach ($crawlerFailures as $r) {
                 $name = basename($r->repoPath);
                 $this->line("  <fg=yellow;options=bold>! {$name}</> — site-crawler crawl:ddev failed");
-                if ($r->crawlerLogPath !== null) {
-                    $this->line("    <fg=gray>log:</> {$r->crawlerLogPath}");
-                }
-                if ($r->transcriptPath !== null) {
-                    $this->line("    <fg=gray>transcript:</> {$r->transcriptPath}");
-                }
+                $this->printRepoTrailer($r->crawlerLogPath, $r->transcriptPath);
             }
         }
 
@@ -639,12 +624,7 @@ class UpdateAllCommand extends Command
                 foreach ($r->crawlerServerErrorUrls as $url) {
                     $this->line("    <fg=red>{$url}</>");
                 }
-                if ($r->crawlerLogPath !== null) {
-                    $this->line("    <fg=gray>log:</> {$r->crawlerLogPath}");
-                }
-                if ($r->transcriptPath !== null) {
-                    $this->line("    <fg=gray>transcript:</> {$r->transcriptPath}");
-                }
+                $this->printRepoTrailer($r->crawlerLogPath, $r->transcriptPath);
             }
         }
 
@@ -706,6 +686,21 @@ class UpdateAllCommand extends Command
         }
 
         return implode(' · ', $parts) ?: '-';
+    }
+
+    /**
+     * Emits the "log: ... / transcript: ..." indented lines shared by every
+     * per-repo warning block in the post-run summary. Both lines are skipped
+     * when the corresponding path is null.
+     */
+    private function printRepoTrailer(?string $logPath, ?string $transcriptPath): void
+    {
+        if ($logPath !== null) {
+            $this->line("    <fg=gray>log:</> {$logPath}");
+        }
+        if ($transcriptPath !== null) {
+            $this->line("    <fg=gray>transcript:</> {$transcriptPath}");
+        }
     }
 
     private function printFailureBlock(RepoUpdateResult $r): void

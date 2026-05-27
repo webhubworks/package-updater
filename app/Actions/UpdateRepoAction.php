@@ -170,18 +170,12 @@ final class UpdateRepoAction
                 'ddev composer prep',
             );
 
-            $combinedOutput = $prep->getOutput() . "\n" . $prep->getErrorOutput();
-            $stats = self::parseTestSummary($combinedOutput);
-            if ($stats !== null) {
-                $testsFailed = $stats['failed'];
-                $testsSummary = $stats['summary'];
-            }
-            $phpstanErrors = self::parsePhpstanErrors($combinedOutput);
+            $outcome = self::summarizePrep($prep);
+            $testsFailed = $outcome['testsFailed'];
+            $testsSummary = $outcome['testsSummary'];
+            $phpstanErrors = $outcome['phpstanErrors'];
 
-            $hasFailures = ($testsFailed !== null && $testsFailed > 0)
-                || ($phpstanErrors !== null && $phpstanErrors > 0)
-                || ! $prep->isSuccessful();
-            if ($hasFailures) {
+            if ($outcome['hasFailures']) {
                 $prepLogPath = self::writeLog($repoPath, 'composer-prep', $prep);
                 if ($testsSummary === null) {
                     $testsSummary = $prep->isSuccessful()
@@ -556,6 +550,36 @@ final class UpdateRepoAction
         }
 
         return null;
+    }
+
+    /**
+     * Combines the test-summary and phpstan-error parsers into a single
+     * verdict for `composer prep` output. `hasFailures` is true when either
+     * parser found failures, or when the process itself exited non-zero
+     * (covers prep scripts that swallow phpstan's non-zero exit, and the
+     * inverse case where no parseable summary is present at all).
+     *
+     * @return array{testsFailed: ?int, testsSummary: ?string, phpstanErrors: ?int, hasFailures: bool}
+     */
+    public static function summarizePrep(Process $prep): array
+    {
+        $combined = $prep->getOutput() . "\n" . $prep->getErrorOutput();
+        $stats = self::parseTestSummary($combined);
+        $phpstanErrors = self::parsePhpstanErrors($combined);
+
+        $testsFailed = $stats['failed'] ?? null;
+        $testsSummary = $stats['summary'] ?? null;
+
+        $hasFailures = ($testsFailed !== null && $testsFailed > 0)
+            || ($phpstanErrors !== null && $phpstanErrors > 0)
+            || ! $prep->isSuccessful();
+
+        return [
+            'testsFailed' => $testsFailed,
+            'testsSummary' => $testsSummary,
+            'phpstanErrors' => $phpstanErrors,
+            'hasFailures' => $hasFailures,
+        ];
     }
 
     /**
