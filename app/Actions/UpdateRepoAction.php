@@ -157,6 +157,7 @@ final class UpdateRepoAction
         $prepRan = false;
         $testsFailed = null;
         $testsSummary = null;
+        $phpstanErrors = null;
         $prepLogPath = null;
 
         if (self::hasComposerScript($repoPath, 'prep')) {
@@ -175,8 +176,11 @@ final class UpdateRepoAction
                 $testsFailed = $stats['failed'];
                 $testsSummary = $stats['summary'];
             }
+            $phpstanErrors = self::parsePhpstanErrors($combinedOutput);
 
-            $hasFailures = ($testsFailed !== null && $testsFailed > 0) || ! $prep->isSuccessful();
+            $hasFailures = ($testsFailed !== null && $testsFailed > 0)
+                || ($phpstanErrors !== null && $phpstanErrors > 0)
+                || ! $prep->isSuccessful();
             if ($hasFailures) {
                 $prepLogPath = self::writeLog($repoPath, 'composer-prep', $prep);
                 if ($testsSummary === null) {
@@ -236,6 +240,7 @@ final class UpdateRepoAction
             $prepRan,
             $testsFailed,
             $testsSummary,
+            $phpstanErrors,
             $prepLogPath,
             $crawlerRan,
             $crawlerFailed,
@@ -550,6 +555,26 @@ final class UpdateRepoAction
             }
         }
 
+        return null;
+    }
+
+    /**
+     * Parses PHPStan's Symfony-block error summary from prep output.
+     * Returns the error count when phpstan ran and reported errors;
+     * returns null when no phpstan summary is detectable (phpstan didn't
+     * run, or it ran clean — both indistinguishable here, and both mean
+     * "nothing to warn about").
+     *
+     * Matches:
+     *   "[ERROR] Found 9 errors"
+     *   "[ERROR] Found 1 error"
+     */
+    public static function parsePhpstanErrors(string $output): ?int
+    {
+        $stripped = preg_replace('/\x1b\[[0-9;]*[A-Za-z]/', '', $output) ?? $output;
+        if (preg_match('/\[ERROR\]\s+Found\s+(\d+)\s+errors?\b/i', $stripped, $m)) {
+            return (int) $m[1];
+        }
         return null;
     }
 

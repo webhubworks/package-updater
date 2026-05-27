@@ -579,6 +579,29 @@ class UpdateAllCommand extends Command
             }
         }
 
+        $phpstanFailures = array_values(array_filter(
+            $success,
+            fn (RepoUpdateResult $r) => ($r->phpstanErrors ?? 0) > 0,
+        ));
+        if (! empty($phpstanFailures)) {
+            warning(sprintf(
+                '%d repo(s) had PHPStan errors after `composer prep`:',
+                count($phpstanFailures),
+            ));
+            foreach ($phpstanFailures as $r) {
+                $name = basename($r->repoPath);
+                $count = (int) $r->phpstanErrors;
+                $label = $count === 1 ? 'error' : 'errors';
+                $this->line("  <fg=red;options=bold>✗ {$name}</> — PHPStan: {$count} {$label}");
+                if ($r->prepLogPath !== null) {
+                    $this->line("    <fg=gray>log:</> {$r->prepLogPath}");
+                }
+                if ($r->transcriptPath !== null) {
+                    $this->line("    <fg=gray>transcript:</> {$r->transcriptPath}");
+                }
+            }
+        }
+
         $crawlerFailures = array_values(array_filter(
             $success,
             fn (RepoUpdateResult $r) => $r->crawlerRan && $r->crawlerFailed,

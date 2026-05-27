@@ -125,6 +125,7 @@ class UpdateCommand extends Command
 
         $combined = $prep->getOutput()."\n".$prep->getErrorOutput();
         $summary = UpdateRepoAction::parseTestSummary($combined);
+        $phpstanErrors = UpdateRepoAction::parsePhpstanErrors($combined);
 
         $this->newLine();
         if ($summary === null) {
@@ -132,9 +133,17 @@ class UpdateCommand extends Command
                 ? '  <fg=gray>Prep ran but no test summary detected.</>'
                 : "  <fg=red;options=bold>✗ Prep failed (exit {$prep->getExitCode()}); no test summary detected.</>");
         } elseif ($summary['failed'] > 0) {
-            $this->line("  <fg=red;options=bold>✗ Prep: {$summary['summary']}</>");
+            $this->line("  <fg=red;options=bold>✗ Tests: {$summary['summary']}</>");
         } else {
-            $this->line("  <fg=green>✓ Prep: {$summary['summary']}</>");
+            $this->line("  <fg=green>✓ Tests: {$summary['summary']}</>");
+        }
+
+        if ($phpstanErrors !== null && $phpstanErrors > 0) {
+            $this->line(sprintf(
+                '  <fg=red;options=bold>✗ PHPStan: %d error%s</>',
+                $phpstanErrors,
+                $phpstanErrors === 1 ? '' : 's',
+            ));
         }
 
         $this->printLogPath($logPath);
