@@ -492,7 +492,7 @@ final class UpdateRepoAction
         return $updates;
     }
 
-    private static function hasComposerScript(string $repoPath, string $scriptName): bool
+    public static function hasComposerScript(string $repoPath, string $scriptName): bool
     {
         $composerJson = $repoPath . '/composer.json';
         if (! is_file($composerJson)) {

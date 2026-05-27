@@ -2,6 +2,7 @@
 
 namespace App\Commands;
 
+use App\Actions\UpdateRepoAction;
 use LaravelZero\Framework\Commands\Command;
 use Symfony\Component\Console\Formatter\OutputFormatter;
 use Symfony\Component\Console\Terminal;
@@ -89,20 +90,58 @@ class UpdateCommand extends Command
         $this->printLogPath($logPath);
 
         $statusAfter = $this->exec(['git', 'status', '--porcelain'], $cwd, stream: false);
-        if (! $statusAfter->isSuccessful() || trim($statusAfter->getOutput()) === '') {
+        $hasChanges = $statusAfter->isSuccessful() && trim($statusAfter->getOutput()) !== '';
+
+        $exitCode = self::SUCCESS;
+        if (! $hasChanges) {
             info('No working-tree changes after composer update — nothing to commit.');
-            return self::SUCCESS;
+        } elseif ($this->shouldCommit() && ! $this->commit($cwd, $updates)) {
+            $exitCode = self::FAILURE;
         }
 
-        if (! $this->shouldCommit()) {
-            return self::SUCCESS;
+        $this->runPrep($cwd, $useDdev);
+
+        return $exitCode;
+    }
+
+    /**
+     * Runs `composer prep` (when the repo defines it) after the update +
+     * commit step so the user sees test results before walking away. Failures
+     * here do not change the command's exit code — the update itself already
+     * succeeded; prep is a verification layer.
+     */
+    private function runPrep(string $cwd, bool $useDdev): void
+    {
+        if (! UpdateRepoAction::hasComposerScript($cwd, 'prep')) {
+            return;
         }
 
-        return $this->commit($cwd, $updates) ? self::SUCCESS : self::FAILURE;
+        $cmd = $useDdev ? ['ddev', 'composer', 'prep'] : ['composer', 'prep'];
+        $label = implode(' ', $cmd);
+
+        $this->newLine();
+        $prep = $this->runComposer($cmd, $cwd, $label);
+        $logPath = $this->writeLog($cwd, $cmd, $prep, 'pu-prep');
+
+        $combined = $prep->getOutput()."\n".$prep->getErrorOutput();
+        $summary = UpdateRepoAction::parseTestSummary($combined);
+
+        $this->newLine();
+        if ($summary === null) {
+            $this->line($prep->isSuccessful()
+                ? '  <fg=gray>Prep ran but no test summary detected.</>'
+                : "  <fg=red;options=bold>✗ Prep failed (exit {$prep->getExitCode()}); no test summary detected.</>");
+        } elseif ($summary['failed'] > 0) {
+            $this->line("  <fg=red;options=bold>✗ Prep: {$summary['summary']}</>");
+        } else {
+            $this->line("  <fg=green>✓ Prep: {$summary['summary']}</>");
+        }
+
+        $this->printLogPath($logPath);
     }
 
     /** @param  list<string>  $cmd */
-    private function writeLog(string $cwd, array $cmd, Process $process): ?string
+    private function writeLog(string $cwd, array $cmd, Process $process, string $prefix = 'pu-update'): ?string
     {
         $dir = $this->resolveLogDir($cwd);
         if ($dir === null) {
@@ -110,7 +149,7 @@ class UpdateCommand extends Command
         }
 
         $slug = preg_replace('/[^a-z0-9]+/i', '-', basename($cwd)) ?: 'repo';
-        $file = sprintf('%s/pu-update-%s-%s.log', $dir, trim($slug, '-'), date('Ymd-His'));
+        $file = sprintf('%s/%s-%s-%s.log', $dir, $prefix, trim($slug, '-'), date('Ymd-His'));
 
         $contents = '# Command: '.implode(' ', $cmd)."\n"
             .'# CWD: '.$cwd."\n"
