@@ -120,7 +120,10 @@ class UpdateCommand extends Command
         $label = implode(' ', $cmd);
 
         $this->newLine();
-        $prep = $this->runComposer($cmd, $cwd, $label);
+        // Prep typically invokes phpstan/pest, which buffer their output when
+        // they don't see a TTY — without a pty the tail renderer has nothing
+        // to draw until the run finishes. setPty makes them flush per line.
+        $prep = $this->runComposer($cmd, $cwd, $label, usePty: Process::isPtySupported());
         $logPath = $this->writeLog($cwd, $cmd, $prep, 'pu-prep');
 
         $outcome = UpdateRepoAction::summarizePrep($prep);
@@ -205,14 +208,14 @@ class UpdateCommand extends Command
     }
 
     /** @param  list<string>  $cmd */
-    private function runComposer(array $cmd, string $cwd, string $label): Process
+    private function runComposer(array $cmd, string $cwd, string $label, bool $usePty = false): Process
     {
         if ($this->option('show-output')) {
             info("Running: {$label}");
-            return $this->exec($cmd, $cwd, stream: true);
+            return $this->exec($cmd, $cwd, stream: true, usePty: $usePty);
         }
 
-        return $this->runComposerWithTail($cmd, $cwd, $label);
+        return $this->runComposerWithTail($cmd, $cwd, $label, $usePty);
     }
 
     /**
@@ -223,11 +226,11 @@ class UpdateCommand extends Command
      *
      * @param  list<string>  $cmd
      */
-    private function runComposerWithTail(array $cmd, string $cwd, string $label): Process
+    private function runComposerWithTail(array $cmd, string $cwd, string $label, bool $usePty = false): Process
     {
         if (! $this->output->isDecorated()) {
             $this->line("  Running `{$label}`...");
-            return $this->exec($cmd, $cwd, stream: false);
+            return $this->exec($cmd, $cwd, stream: false, usePty: $usePty);
         }
 
         $maxLines = 5;
@@ -257,6 +260,9 @@ class UpdateCommand extends Command
 
         $process = new Process($cmd, $cwd);
         $process->setTimeout(3600);
+        if ($usePty) {
+            $process->setPty(true);
+        }
         $process->run(function (string $type, string $chunk) use (&$buffer, $draw): void {
             $chunk = preg_replace('/\x1b\[[0-9;]*[A-Za-z]/', '', $chunk) ?? $chunk;
             foreach (preg_split("/\r\n|\r|\n/", $chunk) as $line) {
@@ -500,10 +506,13 @@ class UpdateCommand extends Command
     }
 
     /** @param  list<string>  $cmd */
-    private function exec(array $cmd, string $cwd, bool $stream): Process
+    private function exec(array $cmd, string $cwd, bool $stream, bool $usePty = false): Process
     {
         $process = new Process($cmd, $cwd);
         $process->setTimeout(3600);
+        if ($usePty) {
+            $process->setPty(true);
+        }
 
         if ($stream) {
             $process->run(function (string $type, string $buffer): void {
