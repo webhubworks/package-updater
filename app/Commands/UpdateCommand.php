@@ -11,6 +11,7 @@ use Symfony\Component\Process\Process;
 
 use function Laravel\Prompts\confirm;
 use function Laravel\Prompts\info;
+use function Laravel\Prompts\text;
 use function Laravel\Prompts\warning;
 
 class UpdateCommand extends Command
@@ -65,16 +66,26 @@ class UpdateCommand extends Command
             && self::isCraftRepo($cwd);
 
         if ($isCraft) {
-            $cmd = ['ddev', 'php', 'craft', 'update', 'all', '--interactive=0', '--with-expired', '--minor-only', '--backup=1'];
+            $defaultCmd = 'ddev php craft update all --interactive=0 --with-expired --minor-only --backup=1';
         } else {
-            $cmd = $useDdev ? ['ddev', 'composer', 'update'] : ['composer', 'update'];
-            $cmd = array_merge($cmd, $packages);
+            $base = $useDdev ? 'ddev composer update' : 'composer update';
+            $defaultCmd = trim($base.' '.implode(' ', $packages));
         }
-        $label = implode(' ', $cmd);
 
-        if (! $this->option('yes') && ! confirm("Run `{$label}` in {$cwd}?", default: true)) {
-            return self::SUCCESS;
+        if ($this->option('yes')) {
+            $cmd = $defaultCmd;
+        } else {
+            $cmd = trim((string) text(
+                label: "Do you want to run the following command in {$cwd}?",
+                default: $defaultCmd,
+                required: true,
+                hint: 'Edit if needed, then press Enter to run it.',
+            ));
+            if ($cmd === '') {
+                return self::SUCCESS;
+            }
         }
+        $label = $cmd;
 
         $update = $this->runComposer($cmd, $cwd, $label);
         $logPath = $this->writeLog($cwd, $cmd, $update);
@@ -193,8 +204,8 @@ class UpdateCommand extends Command
         $this->printLogPath($logPath);
     }
 
-    /** @param  list<string>  $cmd */
-    private function writeLog(string $cwd, array $cmd, Process $process, string $prefix = 'pu-update'): ?string
+    /** @param  list<string>|string  $cmd */
+    private function writeLog(string $cwd, array|string $cmd, Process $process, string $prefix = 'pu-update'): ?string
     {
         $dir = $this->resolveLogDir($cwd);
         if ($dir === null) {
@@ -204,7 +215,8 @@ class UpdateCommand extends Command
         $slug = preg_replace('/[^a-z0-9]+/i', '-', basename($cwd)) ?: 'repo';
         $file = sprintf('%s/%s-%s-%s.log', $dir, $prefix, trim($slug, '-'), date('Ymd-His'));
 
-        $contents = '# Command: '.implode(' ', $cmd)."\n"
+        $cmdStr = is_array($cmd) ? implode(' ', $cmd) : $cmd;
+        $contents = '# Command: '.$cmdStr."\n"
             .'# CWD: '.$cwd."\n"
             .'# Exit: '.$process->getExitCode()."\n"
             .'# Timestamp: '.date('c')."\n"
@@ -249,8 +261,8 @@ class UpdateCommand extends Command
         $this->line("  <fg=gray>Log:</> {$logPath}");
     }
 
-    /** @param  list<string>  $cmd */
-    private function runComposer(array $cmd, string $cwd, string $label, bool $usePty = false): Process
+    /** @param  list<string>|string  $cmd */
+    private function runComposer(array|string $cmd, string $cwd, string $label, bool $usePty = false): Process
     {
         if ($this->option('show-output')) {
             info("Running: {$label}");
@@ -266,9 +278,9 @@ class UpdateCommand extends Command
      * a single static "Running..." line for non-decorated outputs (pipes,
      * CI), where redraw escapes would render as garbage.
      *
-     * @param  list<string>  $cmd
+     * @param  list<string>|string  $cmd
      */
-    private function runComposerWithTail(array $cmd, string $cwd, string $label, bool $usePty = false): Process
+    private function runComposerWithTail(array|string $cmd, string $cwd, string $label, bool $usePty = false): Process
     {
         if (! $this->output->isDecorated()) {
             $this->line("  Running `{$label}`...");
@@ -300,7 +312,9 @@ class UpdateCommand extends Command
             }
         };
 
-        $process = new Process($cmd, $cwd);
+        $process = is_string($cmd)
+            ? Process::fromShellCommandline($cmd, $cwd)
+            : new Process($cmd, $cwd);
         $process->setTimeout(3600);
         if ($usePty) {
             $process->setPty(true);
@@ -558,10 +572,12 @@ class UpdateCommand extends Command
         ];
     }
 
-    /** @param  list<string>  $cmd */
-    private function exec(array $cmd, string $cwd, bool $stream, bool $usePty = false): Process
+    /** @param  list<string>|string  $cmd */
+    private function exec(array|string $cmd, string $cwd, bool $stream, bool $usePty = false): Process
     {
-        $process = new Process($cmd, $cwd);
+        $process = is_string($cmd)
+            ? Process::fromShellCommandline($cmd, $cwd)
+            : new Process($cmd, $cwd);
         $process->setTimeout(3600);
         if ($usePty) {
             $process->setPty(true);
