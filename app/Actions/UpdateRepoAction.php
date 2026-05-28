@@ -303,9 +303,11 @@ final class UpdateRepoAction
             return self::fail($repoPath, $branch, $failStep, $update);
         }
 
+        $combined = $update->getOutput() . "\n" . $update->getErrorOutput();
+
         return $craftCommandLine !== null
-            ? self::parseCraftUpdates($update->getOutput() . "\n" . $update->getErrorOutput())
-            : [];
+            ? self::parseCraftUpdates($combined)
+            : self::parseComposerUpdates($combined);
     }
 
     /**
@@ -454,15 +456,17 @@ final class UpdateRepoAction
 
     /**
      * Stage + commit every working-tree change with title "Package updates"
-     * and a body listing each parsed name/from/to update.
+     * and a body listing each parsed name/from/to update. The list comes from
+     * parseCraftUpdates (craft path) or parseComposerUpdates (composer path).
      *
      * The start-of-run dirty check guarantees the working tree was clean when
      * we began, so every change here originated from this run (ddev side
-     * effects, craft update, composer prep). We commit all of it, even when
-     * the parsed update list is empty — otherwise an unparseable header (e.g.
-     * a craft variant the regex doesn't recognise) leaves the repo "dirty"
-     * for no real reason. Returns true on a successful commit, false on any
-     * failure (non-fatal — repo just stays dirty for manual review).
+     * effects, craft/composer update, composer prep). We commit all of it,
+     * even when the parsed update list is empty — otherwise an unparseable
+     * header (a craft variant the regex doesn't recognise, an unexpected
+     * composer output shape) leaves the repo "dirty" for no real reason.
+     * Returns true on a successful commit, false on any failure (non-fatal
+     * — repo just stays dirty for manual review).
      *
      * @param  list<array{name: string, from: string, to: string}>  $updates
      * @param  callable(string, ?string, ?string): void|null  $onProgress
@@ -480,7 +484,7 @@ final class UpdateRepoAction
         }
 
         $body = empty($updates)
-            ? '(no update list parsed from craft output)'
+            ? '(no update list parsed - see diff for details)'
             : implode("\n", array_map(
                 fn (array $u) => sprintf(
                     '- %s %s => %s%s',
@@ -628,6 +632,42 @@ final class UpdateRepoAction
 
             // Non-blank, non-matching line ends the block.
             break;
+        }
+
+        return $updates;
+    }
+
+    /**
+     * Parses composer's update list from `composer update` output, picking up
+     * the `  - Upgrading vendor/pkg (a => b)` / `Downgrading` lines composer
+     * emits for both the "Lock file operations" and "Package operations"
+     * blocks. The same package shows up in both blocks — we dedupe by name and
+     * keep the first occurrence so each package appears once in the commit
+     * body. Newly-installed packages (no `=>`) are skipped because the
+     * "from => to" shape is what the commit body expects; that's rare for
+     * `composer update` and easy to spot in the diff if it happens.
+     *
+     * @return list<array{name: string, from: string, to: string}>
+     */
+    public static function parseComposerUpdates(string $output): array
+    {
+        $stripped = preg_replace('/\x1b\[[0-9;]*[A-Za-z]/', '', $output) ?? $output;
+        $lines = preg_split("/\r\n|\r|\n/", $stripped) ?: [];
+
+        $updates = [];
+        $seen = [];
+
+        foreach ($lines as $line) {
+            $trimmed = trim($line);
+            if (! preg_match('/^-\s+(?:Upgrading|Downgrading)\s+(\S+)\s+\(([^)]+?)\s+=>\s+([^)]+?)\)/', $trimmed, $m)) {
+                continue;
+            }
+            $name = $m[1];
+            if (isset($seen[$name])) {
+                continue;
+            }
+            $seen[$name] = true;
+            $updates[] = ['name' => $name, 'from' => trim($m[2]), 'to' => trim($m[3])];
         }
 
         return $updates;
