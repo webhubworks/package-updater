@@ -185,12 +185,17 @@ final class UpdateRepoAction
 
         if (self::hasComposerScript($repoPath, 'prep')) {
             $prepRan = true;
+            // Prep typically invokes phpstan/pest, which buffer their output
+            // when they don't see a TTY — without a pty the streaming callback
+            // gets nothing until the run finishes. setPty makes them flush
+            // per line so the progress rows render live.
             $prep = self::run(
                 ['ddev', 'composer', 'prep'],
                 $repoPath,
                 3600,
                 $onProgress,
                 'ddev composer prep',
+                usePty: Process::isPtySupported(),
             );
 
             $outcome = self::summarizePrep($prep);
@@ -900,6 +905,7 @@ final class UpdateRepoAction
         ?callable $onProgress = null,
         string $label = '',
         bool $stream = true,
+        bool $usePty = false,
     ): Process {
         self::transcriptStep($label, $command);
 
@@ -907,6 +913,9 @@ final class UpdateRepoAction
             ? Process::fromShellCommandline($command, $cwd)
             : new Process($command, $cwd);
         $process->setTimeout($timeout);
+        if ($usePty) {
+            $process->setPty(true);
+        }
 
         if ($stream) {
             // Stream chunks even when no $onProgress is set (e.g. inside
