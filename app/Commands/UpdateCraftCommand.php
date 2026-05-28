@@ -155,6 +155,10 @@ class UpdateCraftCommand extends UpdateAllCommand
 
         $sweepPatterns = $this->resolveSweepPatterns();
 
+        if (! $this->confirmDirtyRepos(array_map(fn ($m) => $m['path'], $matches))) {
+            return self::SUCCESS;
+        }
+
         LastRunStore::save('update:craft', ['handle' => $handle], [
             'reps-dir' => $reposDir,
             'parallel' => (string) $parallel,

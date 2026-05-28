@@ -348,6 +348,79 @@ trait RunsBulkRepoTasks
     }
 
     /**
+     * Right before the run starts, scan every selected repo for uncommitted
+     * changes and surface the list in one block so the user has a chance to
+     * commit/stash before any work begins. Without this gate, dirty repos
+     * silently get marked "skipped" by the per-repo `git status` guard in
+     * UpdateRepoAction — easy to miss when fanning out across many repos.
+     *
+     * Returns true to proceed, false when the user wants to abort. In --yes
+     * mode the list is still printed but the prompt is auto-confirmed.
+     *
+     * @param  list<string>  $repos  absolute repo paths
+     */
+    protected function confirmDirtyRepos(array $repos): bool
+    {
+        if (empty($repos)) {
+            return true;
+        }
+
+        info(sprintf('Scanning %d repo(s) for uncommitted changes...', count($repos)));
+
+        /** @var list<array{repo: string, count: int}> $dirty */
+        $dirty = [];
+        foreach ($repos as $repo) {
+            $process = new Process(['git', 'status', '--porcelain'], $repo);
+            $process->setTimeout(60);
+            try {
+                $process->run();
+            } catch (\Throwable) {
+                continue;
+            }
+            if (! $process->isSuccessful()) {
+                continue;
+            }
+            $output = trim($process->getOutput());
+            if ($output === '') {
+                continue;
+            }
+            $lines = array_filter(preg_split('/\r\n|\r|\n/', $output) ?: []);
+            $dirty[] = ['repo' => $repo, 'count' => count($lines)];
+        }
+
+        if (empty($dirty)) {
+            return true;
+        }
+
+        warning(sprintf(
+            '%d of %d repo(s) have uncommitted changes — they will be skipped unless cleaned up before the run:',
+            count($dirty),
+            count($repos),
+        ));
+        foreach ($dirty as $entry) {
+            $name = basename($entry['repo']);
+            $files = $entry['count'] === 1 ? 'file' : 'files';
+            $this->line(sprintf(
+                '  <fg=yellow>!</> %s <fg=gray>(%d %s changed - %s)</>',
+                $name,
+                $entry['count'],
+                $files,
+                $entry['repo'],
+            ));
+        }
+
+        if ($this->option('yes')) {
+            return true;
+        }
+
+        return confirm(
+            label: 'Continue once you have committed/stashed those changes?',
+            default: true,
+            hint: 'Repos that are still dirty when the run reaches them get skipped as "uncommitted changes".',
+        );
+    }
+
+    /**
      * Filter matches by substring match against the repo's composer.json "name"
      * field. No-op when --filter-name is not set.
      *

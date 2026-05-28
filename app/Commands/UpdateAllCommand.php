@@ -194,6 +194,10 @@ class UpdateAllCommand extends Command
             return self::SUCCESS;
         }
 
+        if (! $this->confirmDirtyRepos($repos)) {
+            return self::SUCCESS;
+        }
+
         LastRunStore::save('update:all', ['package' => $package], [
             'reps-dir' => $reposDir,
             'parallel' => (string) $parallel,
