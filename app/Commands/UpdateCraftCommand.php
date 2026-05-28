@@ -213,10 +213,11 @@ class UpdateCraftCommand extends UpdateAllCommand
         };
 
         $repos = array_map(fn ($m) => $m['path'], $matches);
+        $pathOf = fn (string $repo): string => $repo;
 
         $results = $parallel === 1
-            ? $this->runSequential($repos, $updater)
-            : $this->runParallel($repos, $parallel, $buildCmd);
+            ? $this->runSequential($repos, $pathOf, $updater)
+            : $this->runParallel($repos, $parallel, $pathOf, $buildCmd);
 
         $allResults = array_merge($preSkipped, $results);
         $this->printSummary($allResults, $targetVersion);
