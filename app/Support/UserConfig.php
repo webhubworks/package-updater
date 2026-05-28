@@ -75,4 +75,39 @@ final class UserConfig
         $data['repos_dir'] = $reposDir;
         self::save($data);
     }
+
+    /**
+     * True once the user has answered the sweep-allowlist prompt at least
+     * once (the saved value may be an empty list — "no sweep ever" — which
+     * we still treat as "configured", so we don't keep re-prompting).
+     */
+    public static function hasSweepAllowlist(): bool
+    {
+        return array_key_exists('composer_sweep_allowlist', self::load());
+    }
+
+    /** @return list<string> */
+    public static function getSweepAllowlist(): array
+    {
+        $value = self::load()['composer_sweep_allowlist'] ?? [];
+        if (! is_array($value)) {
+            return [];
+        }
+
+        return array_values(array_filter(
+            array_map('strval', $value),
+            fn (string $p) => $p !== '',
+        ));
+    }
+
+    /** @param list<string> $patterns */
+    public static function setSweepAllowlist(array $patterns): void
+    {
+        $data = self::load();
+        $data['composer_sweep_allowlist'] = array_values(array_filter(
+            array_map('strval', $patterns),
+            fn (string $p) => $p !== '',
+        ));
+        self::save($data);
+    }
 }

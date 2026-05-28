@@ -37,6 +37,13 @@ final class UpdateRepoAction
      *                                                                  message becomes "Remove <pkg>" or
      *                                                                  "Remove N packages" with a body
      *                                                                  listing the removed names.
+     * @param  list<string>|null  $sweepPatterns  Optional fnmatch patterns (e.g. `webhubworks/*`).
+     *                                            Only honoured for craft-mode runs. After craft
+     *                                            update, `composer outdated --format=json` is parsed
+     *                                            and any installed package whose name matches a
+     *                                            pattern gets `composer update <pkg> -W`. If any
+     *                                            package was bumped, migrate/all + project-config/apply
+     *                                            re-run so DB and config catch up.
      */
     public static function update(
         string $repoPath,
@@ -49,10 +56,11 @@ final class UpdateRepoAction
         ?string $crawlerCommandLine = null,
         bool $commit = false,
         ?array $removeSpec = null,
+        ?array $sweepPatterns = null,
     ): RepoUpdateResult {
         $transcriptPath = self::openTranscript($repoPath);
         try {
-            $result = self::doUpdate($repoPath, $package, $onProgress, $withAllDependencies, $updatePackage, $keepDdevRunning, $craftCommandLine, $crawlerCommandLine, $commit, $removeSpec);
+            $result = self::doUpdate($repoPath, $package, $onProgress, $withAllDependencies, $updatePackage, $keepDdevRunning, $craftCommandLine, $crawlerCommandLine, $commit, $removeSpec, $sweepPatterns);
         } finally {
             self::closeTranscript();
         }
@@ -78,6 +86,7 @@ final class UpdateRepoAction
         ?string $crawlerCommandLine,
         bool $commit,
         ?array $removeSpec = null,
+        ?array $sweepPatterns = null,
     ): RepoUpdateResult {
         $updatePackage = $updatePackage ?? $package;
 
@@ -153,6 +162,19 @@ final class UpdateRepoAction
             return $packageStep;
         }
         $packageUpdates = $packageStep;
+
+        // Composer sweep: after `craft update` finishes, pick up updates Craft
+        // doesn't know about (private/Repman plugins, transitive libs of Craft
+        // plugins) and bump them via `composer update -W` + post-migrate.
+        if ($craftCommandLine !== null && ! empty($sweepPatterns)) {
+            $sweepStep = self::runComposerSweep($repoPath, $branch, $sweepPatterns, $onProgress);
+            if ($sweepStep instanceof RepoUpdateResult) {
+                return $sweepStep;
+            }
+            foreach ($sweepStep as $u) {
+                $packageUpdates[] = $u;
+            }
+        }
 
         $prepRan = false;
         $testsFailed = null;
@@ -317,6 +339,117 @@ final class UpdateRepoAction
     }
 
     /**
+     * Run `composer outdated --format=json`, filter the result by the given
+     * fnmatch patterns (e.g. `webhubworks/*`), then `composer update -W` the
+     * matches in one call. When at least one package was bumped, re-run
+     * `migrate/all` + `project-config/apply` so DB/config catch up with code.
+     *
+     * Returns the list of `{name, from, to, origin}` updates (origin=sweep) on
+     * success, an empty list when nothing matched, or a failure
+     * RepoUpdateResult to short-circuit doUpdate.
+     *
+     * @param  list<string>  $patterns
+     * @param  callable(string, ?string, ?string): void|null  $onProgress
+     * @return list<array{name: string, from: string, to: string, origin: string}>|RepoUpdateResult
+     */
+    private static function runComposerSweep(
+        string $repoPath,
+        string $branch,
+        array $patterns,
+        ?callable $onProgress,
+    ): array|RepoUpdateResult {
+        $outdated = self::run(
+            ['ddev', 'composer', 'outdated', '--format=json', '--no-interaction'],
+            $repoPath,
+            600,
+            $onProgress,
+            'ddev composer outdated (sweep)',
+        );
+        if (! $outdated->isSuccessful()) {
+            return self::fail($repoPath, $branch, 'ddev composer outdated', $outdated);
+        }
+
+        $matches = self::filterOutdatedByPatterns($outdated->getOutput(), $patterns);
+        if (empty($matches)) {
+            return [];
+        }
+
+        $names = array_map(fn (array $m) => $m['name'], $matches);
+        $updateCmd = ['ddev', 'composer', 'update', '--no-audit', '--no-interaction', '-W', ...$names];
+        $update = self::run(
+            $updateCmd,
+            $repoPath,
+            1800,
+            $onProgress,
+            'ddev composer update -W (sweep) ' . implode(' ', $names),
+        );
+        if (! $update->isSuccessful()) {
+            return self::fail($repoPath, $branch, 'ddev composer update (sweep)', $update);
+        }
+
+        $postSteps = [
+            [['ddev', 'php', 'craft', 'migrate/all'], 'ddev php craft migrate/all (post-sweep)'],
+            [['ddev', 'php', 'craft', 'project-config/apply'], 'ddev php craft project-config/apply (post-sweep)'],
+        ];
+        foreach ($postSteps as [$args, $stepLabel]) {
+            $proc = self::run($args, $repoPath, 1800, $onProgress, $stepLabel);
+            if (! $proc->isSuccessful()) {
+                return self::fail($repoPath, $branch, $stepLabel, $proc);
+            }
+        }
+
+        return $matches;
+    }
+
+    /**
+     * Parse `composer outdated --format=json` output and return the entries
+     * whose name matches any of the given fnmatch patterns. Composer's
+     * `outdated` output already excludes up-to-date packages, so the caller
+     * doesn't need to version-compare.
+     *
+     * @param  list<string>  $patterns
+     * @return list<array{name: string, from: string, to: string, origin: string}>
+     */
+    public static function filterOutdatedByPatterns(string $jsonOutput, array $patterns): array
+    {
+        $data = json_decode($jsonOutput, true);
+        if (! is_array($data)) {
+            return [];
+        }
+        $installed = $data['installed'] ?? [];
+        if (! is_array($installed)) {
+            return [];
+        }
+
+        $matches = [];
+        foreach ($installed as $pkg) {
+            if (! is_array($pkg)) {
+                continue;
+            }
+            $name = (string) ($pkg['name'] ?? '');
+            $version = (string) ($pkg['version'] ?? '');
+            $latest = (string) ($pkg['latest'] ?? '');
+            if ($name === '' || $version === '' || $latest === '') {
+                continue;
+            }
+
+            foreach ($patterns as $pattern) {
+                if (fnmatch($pattern, $name)) {
+                    $matches[] = [
+                        'name' => $name,
+                        'from' => $version,
+                        'to' => $latest,
+                        'origin' => 'sweep',
+                    ];
+                    break;
+                }
+            }
+        }
+
+        return $matches;
+    }
+
+    /**
      * Stage + commit every working-tree change with title "Package updates"
      * and a body listing each parsed name/from/to update.
      *
@@ -346,7 +479,13 @@ final class UpdateRepoAction
         $body = empty($updates)
             ? '(no update list parsed from craft output)'
             : implode("\n", array_map(
-                fn (array $u) => sprintf('- %s %s => %s', $u['name'], $u['from'], $u['to']),
+                fn (array $u) => sprintf(
+                    '- %s %s => %s%s',
+                    $u['name'],
+                    $u['from'],
+                    $u['to'],
+                    ($u['origin'] ?? 'craft') === 'sweep' ? '  (via composer sweep)' : '',
+                ),
                 $updates,
             ));
 

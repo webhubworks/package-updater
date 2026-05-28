@@ -5,6 +5,7 @@ namespace App\Commands;
 use App\Actions\FindCraftReposAction;
 use App\Actions\LastRunStore;
 use App\Actions\UpdateRepoAction;
+use App\Support\UserConfig;
 
 use function Laravel\Prompts\confirm;
 use function Laravel\Prompts\info;
@@ -34,6 +35,8 @@ class UpdateCraftCommand extends UpdateAllCommand
         {--crawler-command= : Full shell command to run as the crawler (skips the editable-command prompt). Defaults to `site-crawler crawl:ddev --exclude="assets,variant,index.php,downloads,actions,.pdf"`.}
         {--open : After the run, open every repo with uncommitted changes in GitKraken (skips the prompt)}
         {--no-open : Skip the end-of-run "open in GitKraken" prompt entirely}
+        {--composer-sweep=* : fnmatch patterns (e.g. webhubworks/*). After craft update, `composer outdated` is parsed and any installed package matching a pattern is bumped via `composer update -W` + migrate/all + project-config/apply. Repeatable; overrides the stored default.}
+        {--no-composer-sweep : Disable the composer sweep step for this run (overrides the stored default).}
         {--yes : Skip the confirmation prompt}';
 
     protected $description = 'Run `ddev php craft update <handle>` across local repos containing the given Craft plugin (or Craft itself)';
@@ -151,6 +154,8 @@ class UpdateCraftCommand extends UpdateAllCommand
             $crawlerCommandLine = null;
         }
 
+        $sweepPatterns = $this->resolveSweepPatterns();
+
         LastRunStore::save('update:craft', ['handle' => $handle], [
             'reps-dir' => $reposDir,
             'parallel' => (string) $parallel,
@@ -163,6 +168,8 @@ class UpdateCraftCommand extends UpdateAllCommand
             'crawl-repo' => $crawlPaths,
             'no-crawl' => empty($crawlPaths),
             'crawler-command' => $crawlerCommandLine,
+            'composer-sweep' => $sweepPatterns,
+            'no-composer-sweep' => empty($sweepPatterns),
             'commit' => $commit,
             'no-commit' => ! $commit,
             'yes' => true,
@@ -185,9 +192,10 @@ class UpdateCraftCommand extends UpdateAllCommand
             craftCommandLine: $craftCommandLine,
             crawlerCommandLine: isset($crawlSet[$repo]) ? $crawlerCommandLine : null,
             commit: $commit,
+            sweepPatterns: $sweepPatterns,
         );
 
-        $buildCmd = function (string $repo, string $php, string $binary) use ($packagesByPath, $craftCommandLine, $keepDdevRunning, $crawlSet, $crawlerCommandLine, $commit): array {
+        $buildCmd = function (string $repo, string $php, string $binary) use ($packagesByPath, $craftCommandLine, $keepDdevRunning, $crawlSet, $crawlerCommandLine, $commit, $sweepPatterns): array {
             $cmd = [$php, $binary, 'update:single', $repo, $packagesByPath[$repo], '--craft-command=' . $craftCommandLine];
             if (! $keepDdevRunning) {
                 $cmd[] = '--stop-ddev';
@@ -197,6 +205,9 @@ class UpdateCraftCommand extends UpdateAllCommand
             }
             if ($commit) {
                 $cmd[] = '--commit';
+            }
+            foreach ($sweepPatterns as $pattern) {
+                $cmd[] = '--composer-sweep=' . $pattern;
             }
             return $cmd;
         };
@@ -288,6 +299,67 @@ class UpdateCraftCommand extends UpdateAllCommand
         );
 
         return array_values(array_map('strval', (array) $selected));
+    }
+
+    /**
+     * Resolve which fnmatch patterns the post-craft composer sweep should
+     * use. Precedence:
+     *   1. --no-composer-sweep            (returns [])
+     *   2. --composer-sweep=...           (uses those, repeatable)
+     *   3. UserConfig::hasSweepAllowlist  (uses the saved list — may be [])
+     *   4. --yes                           (returns [] non-interactively)
+     *   5. first-time text() prompt        (saves answer via UserConfig)
+     *
+     * An empty list is a valid, persisted answer — once saved, the prompt
+     * never fires again until the user runs `pu setup`.
+     *
+     * @return list<string>
+     */
+    protected function resolveSweepPatterns(): array
+    {
+        if ($this->option('no-composer-sweep')) {
+            return [];
+        }
+
+        $cli = array_values(array_filter(
+            array_map('strval', (array) $this->option('composer-sweep')),
+            fn ($p) => $p !== '',
+        ));
+        if (! empty($cli)) {
+            return $cli;
+        }
+
+        if (UserConfig::hasSweepAllowlist()) {
+            return UserConfig::getSweepAllowlist();
+        }
+
+        if ($this->option('yes')) {
+            return [];
+        }
+
+        info('First-time setup: composer sweep allowlist is not configured.');
+        note(
+            "After `craft update` finishes, the sweep can run `composer update -W` for any\n"
+            . "package matching one of these fnmatch patterns. Useful for private/Repman\n"
+            . "plugins and transitive libs that Craft's update check doesn't know about.\n"
+            . "Leave blank to skip the sweep — this preference is saved to ~/.config/package-updater/config.json."
+        );
+
+        $value = text(
+            label: 'Composer sweep allowlist',
+            placeholder: 'e.g. webhubworks/* or webhubworks/panoptikum-cell (comma- or space-separated; blank = no sweep)',
+            default: '',
+            hint: 'Saved as your default; override per-run with --composer-sweep= or --no-composer-sweep.',
+        );
+
+        $patterns = array_values(array_filter(
+            array_map('trim', preg_split('/[\s,]+/', (string) $value) ?: []),
+            fn ($p) => $p !== '',
+        ));
+
+        UserConfig::setSweepAllowlist($patterns);
+
+        return $patterns;
     }
 
     /**

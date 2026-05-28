@@ -543,7 +543,8 @@ class UpdateAllCommand extends Command
                         : '<fg=yellow>⚠ uncommitted</>';
                     $this->line("  <options=bold>{$name}</> — {$count} update(s) · {$marker}");
                     foreach ($r->packageUpdates as $u) {
-                        $this->line(sprintf('    - %s %s => %s', $u['name'], $u['from'], $u['to']));
+                        $suffix = ($u['origin'] ?? 'craft') === 'sweep' ? ' <fg=gray>(via composer sweep)</>' : '';
+                        $this->line(sprintf('    - %s %s => %s%s', $u['name'], $u['from'], $u['to'], $suffix));
                     }
                 }
             }
