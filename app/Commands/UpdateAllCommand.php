@@ -35,6 +35,8 @@ class UpdateAllCommand extends Command
         {--update-package= : Run `composer update` on this package instead of the target. Useful for transitive targets where a parent constraint blocks reaching the desired version.}
         {--target-version= : Skip repos whose composer.lock already has this version of the package}
         {--stop-ddev : Stop the ddev project in each repo after a successful update (default: keep running)}
+        {--commit : After a successful update, commit "Package updates" with a body listing what changed (skips the prompt)}
+        {--no-commit : Skip the end-of-run commit step (skips the prompt)}
         {--open : After the run, open every repo with uncommitted changes in GitKraken (skips the prompt)}
         {--no-open : Skip the end-of-run "open in GitKraken" prompt entirely}
         {--yes : Skip the confirmation prompt}';
@@ -182,6 +184,7 @@ class UpdateAllCommand extends Command
 
         $parallel = $this->resolveParallel();
         $keepDdevRunning = $this->resolveKeepDdevRunning();
+        $commit = $this->resolveCommit();
 
         $repos = array_map(fn ($m) => $m['path'], $matches);
         $mode = $parallel === 1 ? 'sequentially' : "with {$parallel} workers in parallel";
@@ -201,6 +204,8 @@ class UpdateAllCommand extends Command
             'repo' => array_map(fn ($m) => $m['path'], $matches),
             'stop-ddev' => ! $keepDdevRunning,
             'no-ssh-auth' => (bool) $this->option('no-ssh-auth'),
+            'commit' => $commit,
+            'no-commit' => ! $commit,
             'yes' => true,
         ]);
 
@@ -209,15 +214,16 @@ class UpdateAllCommand extends Command
         }
 
         $updater = fn (string $repo, callable $onProgress) => UpdateRepoAction::update(
-            $repo,
-            $package,
-            $onProgress,
-            $withAllDependencies,
-            $updatePackage,
-            $keepDdevRunning,
+            repoPath: $repo,
+            package: $package,
+            onProgress: $onProgress,
+            withAllDependencies: $withAllDependencies,
+            updatePackage: $updatePackage,
+            keepDdevRunning: $keepDdevRunning,
+            commit: $commit,
         );
 
-        $buildCmd = function (string $repo, string $php, string $binary) use ($package, $withAllDependencies, $updatePackage, $keepDdevRunning): array {
+        $buildCmd = function (string $repo, string $php, string $binary) use ($package, $withAllDependencies, $updatePackage, $keepDdevRunning, $commit): array {
             $cmd = [$php, $binary, 'update:single', $repo, $package];
             if ($withAllDependencies) {
                 $cmd[] = '--with-all-dependencies';
@@ -227,6 +233,9 @@ class UpdateAllCommand extends Command
             }
             if (! $keepDdevRunning) {
                 $cmd[] = '--stop-ddev';
+            }
+            if ($commit) {
+                $cmd[] = '--commit';
             }
             return $cmd;
         };

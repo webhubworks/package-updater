@@ -7,7 +7,6 @@ use App\Actions\LastRunStore;
 use App\Actions\UpdateRepoAction;
 use App\Support\UserConfig;
 
-use function Laravel\Prompts\confirm;
 use function Laravel\Prompts\info;
 use function Laravel\Prompts\multiselect;
 use function Laravel\Prompts\note;
@@ -225,34 +224,6 @@ class UpdateCraftCommand extends UpdateAllCommand
         $this->offerOpenPrompt($allResults);
 
         return self::SUCCESS;
-    }
-
-    /**
-     * Decide whether to auto-commit the resulting changes in each repo with
-     * title "Package updates" and a body listing the parsed updates. Asked
-     * once up-front (like keep-ddev). Precedence:
-     *   1. --no-commit  (returns false)
-     *   2. --commit     (returns true)
-     *   3. --yes        (defaults to true)
-     *   4. confirm()    (default: yes)
-     */
-    protected function resolveCommit(): bool
-    {
-        if ($this->option('no-commit')) {
-            return false;
-        }
-        if ($this->option('commit')) {
-            return true;
-        }
-        if ($this->option('yes')) {
-            return true;
-        }
-
-        return confirm(
-            label: 'Commit the package updates in each repo? (title: "Package updates", body: parsed update list)',
-            default: true,
-            hint: 'Runs `git add -A` and `git commit` after the update completes — only fires when craft printed a "Performing N updates:" list.',
-        );
     }
 
     /**
