@@ -2,6 +2,7 @@
 
 namespace App\Commands;
 
+use App\Actions\FindCraftReposAction;
 use App\Actions\UpdateRepoAction;
 use LaravelZero\Framework\Commands\Command;
 use Symfony\Component\Console\Formatter\OutputFormatter;
@@ -17,12 +18,13 @@ class UpdateCommand extends Command
     protected $signature = 'update
         {package?* : Composer package name(s) to update; blank = full update}
         {--no-ddev : Skip ddev detection and run composer on the host}
+        {--no-craft : Force composer update even if this repo is a Craft CMS repo}
         {--commit : Always commit the resulting changes (skip prompt)}
         {--no-commit : Never commit (skip prompt)}
         {--show-output : Stream composer output live instead of running it under a spinner}
         {--yes : Skip the run confirmation (defaults to committing if neither --commit nor --no-commit is set)}';
 
-    protected $description = 'Run composer update in the current repo, parse the package changes, and commit them';
+    protected $description = 'Update the current repo (Craft repos: `ddev php craft update all`; otherwise: `composer update`), parse the package changes, and commit them';
 
     public function handle(): int
     {
@@ -54,8 +56,20 @@ class UpdateCommand extends Command
             fn ($p) => $p !== '',
         ));
 
-        $cmd = $useDdev ? ['ddev', 'composer', 'update'] : ['composer', 'update'];
-        $cmd = array_merge($cmd, $packages);
+        // Craft mode only kicks in when we have ddev (needed to run `php craft`),
+        // no explicit package list (craft update is a whole-site refresh), and
+        // the user didn't opt out via --no-craft.
+        $isCraft = $useDdev
+            && empty($packages)
+            && ! $this->option('no-craft')
+            && self::isCraftRepo($cwd);
+
+        if ($isCraft) {
+            $cmd = ['ddev', 'php', 'craft', 'update', 'all', '--interactive=0', '--with-expired', '--minor-only', '--backup=1'];
+        } else {
+            $cmd = $useDdev ? ['ddev', 'composer', 'update'] : ['composer', 'update'];
+            $cmd = array_merge($cmd, $packages);
+        }
         $label = implode(' ', $cmd);
 
         if (! $this->option('yes') && ! confirm("Run `{$label}` in {$cwd}?", default: true)) {
@@ -66,27 +80,33 @@ class UpdateCommand extends Command
         $logPath = $this->writeLog($cwd, $cmd, $update);
 
         if (! $update->isSuccessful()) {
-            $this->error("composer update failed (exit {$update->getExitCode()}):");
+            $failedLabel = $isCraft ? 'craft update' : 'composer update';
+            $this->error("{$failedLabel} failed (exit {$update->getExitCode()}):");
             $this->dumpOutput($update);
             $this->printLogPath($logPath);
             return self::FAILURE;
         }
 
         $combined = $update->getOutput()."\n".$update->getErrorOutput();
-        $updates = self::parseComposerUpdates($combined);
-        $audit = self::parseAuditSummary($combined);
+        $updates = $isCraft
+            ? UpdateRepoAction::parseCraftUpdates($combined)
+            : self::parseComposerUpdates($combined);
 
         $this->newLine();
         if (empty($updates)) {
-            info('No package changes detected in composer output.');
+            info($isCraft
+                ? 'No package changes detected in craft update output.'
+                : 'No package changes detected in composer output.');
         } else {
             info(sprintf('%d package change(s):', count($updates)));
             foreach ($updates as $u) {
-                $this->line('  '.self::formatUpdateLine($u));
+                $this->line('  '.($isCraft ? self::formatCraftUpdateLine($u) : self::formatUpdateLine($u)));
             }
         }
 
-        $this->renderAudit($audit);
+        if (! $isCraft) {
+            $this->renderAudit(self::parseAuditSummary($combined));
+        }
         $this->printLogPath($logPath);
 
         $statusAfter = $this->exec(['git', 'status', '--porcelain'], $cwd, stream: false);
@@ -94,14 +114,36 @@ class UpdateCommand extends Command
 
         $exitCode = self::SUCCESS;
         if (! $hasChanges) {
-            info('No working-tree changes after composer update — nothing to commit.');
-        } elseif ($this->shouldCommit() && ! $this->commit($cwd, $updates)) {
+            info($isCraft
+                ? 'No working-tree changes after craft update — nothing to commit.'
+                : 'No working-tree changes after composer update — nothing to commit.');
+        } elseif ($this->shouldCommit() && ! $this->commit($cwd, $updates, $isCraft)) {
             $exitCode = self::FAILURE;
         }
 
-        $this->runPrep($cwd, $useDdev);
+        // Craft mode skips composer prep — `ddev php craft update` is its own
+        // verification layer and the user opted out of running prep on top.
+        if (! $isCraft) {
+            $this->runPrep($cwd, $useDdev);
+        }
 
         return $exitCode;
+    }
+
+    private static function isCraftRepo(string $cwd): bool
+    {
+        $content = @file_get_contents($cwd.'/composer.json');
+        if ($content === false) {
+            return false;
+        }
+
+        $data = json_decode($content, true);
+        if (! is_array($data)) {
+            return false;
+        }
+
+        return isset($data['require'][FindCraftReposAction::CraftPackage])
+            || isset($data['require-dev'][FindCraftReposAction::CraftPackage]);
     }
 
     /**
@@ -355,8 +397,8 @@ class UpdateCommand extends Command
         );
     }
 
-    /** @param  list<array{kind: string, name: string, from: ?string, to: ?string}>  $updates */
-    private function commit(string $cwd, array $updates): bool
+    /** @param  list<array<string, mixed>>  $updates */
+    private function commit(string $cwd, array $updates, bool $isCraft = false): bool
     {
         $add = $this->exec(['git', 'add', '-A'], $cwd, stream: false);
         if (! $add->isSuccessful()) {
@@ -364,9 +406,14 @@ class UpdateCommand extends Command
             return false;
         }
 
-        $body = empty($updates)
-            ? '(no update list parsed from composer output)'
-            : implode("\n", array_map(self::formatUpdateLine(...), $updates));
+        if (empty($updates)) {
+            $body = $isCraft
+                ? '(no update list parsed from craft output)'
+                : '(no update list parsed from composer output)';
+        } else {
+            $formatter = $isCraft ? self::formatCraftUpdateLine(...) : self::formatUpdateLine(...);
+            $body = implode("\n", array_map($formatter, $updates));
+        }
 
         $commit = $this->exec(
             ['git', 'commit', '-m', 'Package updates', '-m', $body],
@@ -391,6 +438,12 @@ class UpdateCommand extends Command
             'install' => sprintf('- %s installed (%s)', $u['name'], $u['to']),
             'remove' => sprintf('- %s removed (was %s)', $u['name'], $u['from']),
         };
+    }
+
+    /** @param  array{name: string, from: string, to: string}  $u */
+    private static function formatCraftUpdateLine(array $u): string
+    {
+        return sprintf('- %s %s => %s', $u['name'], $u['from'], $u['to']);
     }
 
     /**
