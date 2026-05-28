@@ -121,8 +121,9 @@ final class UpdateRepoAction
         }
 
         $detectedStatus = self::ddevStatus($repoPath);
+        $ddevWasAlreadyRunning = $detectedStatus === 'running';
 
-        if ($detectedStatus === 'running') {
+        if ($ddevWasAlreadyRunning) {
             if ($onProgress !== null) {
                 $onProgress('step-start', null, 'ddev already running — skipping start');
             }
@@ -227,10 +228,12 @@ final class UpdateRepoAction
             }
         }
 
-        if (! $keepDdevRunning) {
+        if (! $keepDdevRunning && ! $ddevWasAlreadyRunning) {
             self::run(['ddev', 'stop'], $repoPath, 300, $onProgress, 'ddev stop');
         } elseif ($onProgress !== null) {
-            $onProgress('step-start', null, 'leaving ddev running');
+            $onProgress('step-start', null, $ddevWasAlreadyRunning
+                ? 'leaving ddev running (was already running before this run)'
+                : 'leaving ddev running');
         }
 
         $installedVersion = self::lockedVersion($repoPath, $package);
