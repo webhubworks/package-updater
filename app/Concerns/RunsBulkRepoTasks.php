@@ -79,8 +79,18 @@ trait RunsBulkRepoTasks
         $spinnerFrames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
         $tick = 0;
 
+        // Two sections: a top "history" section that completed workers' final
+        // rows append into (write-once, never overwritten) and a bottom "live"
+        // section that holds the spinner block for all currently-running
+        // workers. Because the live section is always the newest (bottom),
+        // overwriting it per-tick never triggers a reflow of other sections —
+        // which is what was causing the flicker / apparent re-ordering when
+        // each worker had its own growing section.
+        $historySection = $consoleOutput?->section();
+        $liveSection = $consoleOutput?->section();
+
         $queue = $items;
-        /** @var list<array{process: Process, repo: string, index: int, section: ?ConsoleSectionOutput, started: float, buffer: string, lines: list<array{kind: string, text: string}>}> $running */
+        /** @var list<array{process: Process, repo: string, index: int, started: float, buffer: string, lines: list<array{kind: string, text: string}>}> $running */
         $running = [];
         $results = [];
         $total = count($items);
@@ -96,18 +106,14 @@ trait RunsBulkRepoTasks
                 $process->start();
                 $started++;
 
-                $entry = [
+                $running[] = [
                     'process' => $process,
                     'repo' => $repo,
                     'index' => $started,
-                    'section' => $consoleOutput?->section(),
                     'started' => microtime(true),
                     'buffer' => '',
                     'lines' => [],
                 ];
-                $running[] = $entry;
-
-                $this->sectionWriteln($entry['section'], $this->formatRunningSection($entry, $spinnerFrames[0], $total));
             }
 
             usleep(200_000);
@@ -131,15 +137,6 @@ trait RunsBulkRepoTasks
                 }
             }
 
-            if ($consoleOutput !== null) {
-                $frame = $spinnerFrames[$tick % count($spinnerFrames)];
-                foreach ($running as $entry) {
-                    if ($entry['process']->isRunning() && $entry['section'] !== null) {
-                        $this->sectionOverwrite($entry['section'], $this->formatRunningSection($entry, $frame, $total));
-                    }
-                }
-            }
-
             foreach ($running as $key => $entry) {
                 if ($entry['process']->isRunning()) {
                     continue;
@@ -150,14 +147,23 @@ trait RunsBulkRepoTasks
                 unset($running[$key]);
 
                 $finalLine = $this->formatRepoLine($result, $entry['index'], $total, microtime(true) - $entry['started']);
-                if ($entry['section'] !== null) {
-                    $this->sectionOverwrite($entry['section'], $finalLine);
-                } else {
-                    $this->line($finalLine);
-                }
+                $this->sectionWriteln($historySection, $finalLine);
             }
 
             $running = array_values($running);
+
+            if ($liveSection !== null) {
+                if (! empty($running)) {
+                    $frame = $spinnerFrames[$tick % count($spinnerFrames)];
+                    $blocks = array_map(
+                        fn (array $entry) => $this->formatRunningSection($entry, $frame, $total),
+                        $running,
+                    );
+                    $this->sectionOverwrite($liveSection, implode("\n", $blocks));
+                } else {
+                    $liveSection->clear();
+                }
+            }
         }
 
         return $results;
