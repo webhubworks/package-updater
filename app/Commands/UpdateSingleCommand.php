@@ -3,6 +3,7 @@
 namespace App\Commands;
 
 use App\Actions\UpdateRepoAction;
+use App\Support\ChildProgressEmitter;
 use LaravelZero\Framework\Commands\Command;
 
 class UpdateSingleCommand extends Command
@@ -35,7 +36,7 @@ class UpdateSingleCommand extends Command
         $result = UpdateRepoAction::update(
             $this->argument('repoPath'),
             $this->argument('package'),
-            null,
+            ChildProgressEmitter::for($this->output),
             (bool) $this->option('with-all-dependencies'),
             is_string($updatePackage) && $updatePackage !== '' ? $updatePackage : null,
             ! $this->option('stop-ddev'),

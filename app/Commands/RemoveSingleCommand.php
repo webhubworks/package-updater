@@ -3,6 +3,7 @@
 namespace App\Commands;
 
 use App\Actions\UpdateRepoAction;
+use App\Support\ChildProgressEmitter;
 use LaravelZero\Framework\Commands\Command;
 
 class RemoveSingleCommand extends Command
@@ -38,6 +39,7 @@ class RemoveSingleCommand extends Command
         $result = UpdateRepoAction::update(
             repoPath: $this->argument('repoPath'),
             package: $spec[0]['name'],
+            onProgress: ChildProgressEmitter::for($this->output),
             keepDdevRunning: ! $this->option('stop-ddev'),
             commit: true,
             removeSpec: $spec,

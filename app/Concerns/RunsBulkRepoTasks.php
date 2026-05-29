@@ -7,9 +7,11 @@ use App\Commands\OpenCommand;
 use App\DataTransferObjects\RepoUpdateResult;
 use Closure;
 use Illuminate\Console\OutputStyle;
+use Symfony\Component\Console\Formatter\OutputFormatter;
 use Symfony\Component\Console\Output\ConsoleOutputInterface;
 use Symfony\Component\Console\Output\ConsoleSectionOutput;
 use Symfony\Component\Console\Output\OutputInterface;
+use Symfony\Component\Console\Terminal;
 use Symfony\Component\Process\PhpExecutableFinder;
 use Symfony\Component\Process\Process;
 
@@ -78,7 +80,7 @@ trait RunsBulkRepoTasks
         $tick = 0;
 
         $queue = $items;
-        /** @var list<array{process: Process, repo: string, index: int, section: ?ConsoleSectionOutput, started: float}> $running */
+        /** @var list<array{process: Process, repo: string, index: int, section: ?ConsoleSectionOutput, started: float, buffer: string, lines: list<array{kind: string, text: string}>}> $running */
         $running = [];
         $results = [];
         $total = count($items);
@@ -100,20 +102,40 @@ trait RunsBulkRepoTasks
                     'index' => $started,
                     'section' => $consoleOutput?->section(),
                     'started' => microtime(true),
+                    'buffer' => '',
+                    'lines' => [],
                 ];
                 $running[] = $entry;
 
-                $this->sectionWriteln($entry['section'], $this->formatRunningLine($entry, $spinnerFrames[0], $total));
+                $this->sectionWriteln($entry['section'], $this->formatRunningSection($entry, $spinnerFrames[0], $total));
             }
 
             usleep(200_000);
             $tick++;
 
+            foreach ($running as $key => $entry) {
+                $chunk = $entry['process']->getIncrementalOutput();
+                if ($chunk === '') {
+                    continue;
+                }
+                $running[$key]['buffer'] .= $chunk;
+                while (($pos = strpos($running[$key]['buffer'], "\n")) !== false) {
+                    $line = substr($running[$key]['buffer'], 0, $pos);
+                    $running[$key]['buffer'] = substr($running[$key]['buffer'], $pos + 1);
+                    foreach ($this->extractProgressLines($line) as $rendered) {
+                        $running[$key]['lines'][] = $rendered;
+                    }
+                    if (count($running[$key]['lines']) > 5) {
+                        $running[$key]['lines'] = array_slice($running[$key]['lines'], -5);
+                    }
+                }
+            }
+
             if ($consoleOutput !== null) {
                 $frame = $spinnerFrames[$tick % count($spinnerFrames)];
                 foreach ($running as $entry) {
                     if ($entry['process']->isRunning() && $entry['section'] !== null) {
-                        $this->sectionOverwrite($entry['section'], $this->formatRunningLine($entry, $frame, $total));
+                        $this->sectionOverwrite($entry['section'], $this->formatRunningSection($entry, $frame, $total));
                     }
                 }
             }
@@ -167,6 +189,97 @@ trait RunsBulkRepoTasks
     {
         $section->clear();
         $section->writeln($this->output->getFormatter()->format($message), OutputInterface::OUTPUT_RAW);
+    }
+
+    /**
+     * Render the multi-line block shown in a worker's section: the spinner
+     * header row plus the last (up to 5) output lines from the child process,
+     * indented under the header. When no progress has streamed yet, only the
+     * header is rendered.
+     *
+     * @param array{repo: string, index: int, started: float, lines: list<array{kind: string, text: string}>} $entry
+     */
+    protected function formatRunningSection(array $entry, string $spinnerFrame, int $total): string
+    {
+        $header = $this->formatRunningLine($entry, $spinnerFrame, $total);
+        if (empty($entry['lines'])) {
+            return $header;
+        }
+
+        $indent = '      ';
+        $maxWidth = max(40, (new Terminal())->getWidth() - mb_strlen($indent) - 4);
+        $body = implode("\n", array_map(function (array $l) use ($indent, $maxWidth) {
+            $text = self::truncateForDisplay($l['text'], $maxWidth);
+            $escaped = OutputFormatter::escape($text);
+            return match ($l['kind']) {
+                'step' => $indent . '<fg=blue>→</> ' . $escaped,
+                'err' => $indent . '<fg=yellow>' . $escaped . '</>',
+                default => $indent . '<fg=gray>' . $escaped . '</>',
+            };
+        }, $entry['lines']));
+
+        return $header . "\n" . $body;
+    }
+
+    /**
+     * Parse a single JSON line emitted by a child process via
+     * childProgressEmitter() into one or more {kind, text} entries suitable
+     * for the running-section's "last 5 rows" buffer. Lines that aren't
+     * progress events (e.g. the final result JSON) return an empty list.
+     * ANSI escapes are stripped so we can apply our own colouring at render
+     * time; the raw text is stored so truncation respects character bounds
+     * rather than cutting through markup tags.
+     *
+     * @return list<array{kind: string, text: string}>
+     */
+    protected function extractProgressLines(string $rawLine): array
+    {
+        $rawLine = trim($rawLine);
+        if ($rawLine === '') {
+            return [];
+        }
+
+        $decoded = json_decode($rawLine, true);
+        if (! is_array($decoded) || ($decoded['pu_event'] ?? null) === null) {
+            return [];
+        }
+
+        $event = (string) $decoded['pu_event'];
+        $type = isset($decoded['pu_type']) ? (string) $decoded['pu_type'] : null;
+        $payload = (string) ($decoded['pu_payload'] ?? '');
+
+        if ($event === 'step-start') {
+            $label = trim(self::stripAnsi($payload));
+            if ($label === '') {
+                return [];
+            }
+            return [['kind' => 'step', 'text' => $label]];
+        }
+
+        $kind = $type === 'err' ? 'err' : 'out';
+        $out = [];
+        foreach (preg_split("/\r\n|\r|\n/", $payload) as $line) {
+            $line = rtrim(self::stripAnsi($line));
+            if ($line === '') {
+                continue;
+            }
+            $out[] = ['kind' => $kind, 'text' => $line];
+        }
+
+        return $out;
+    }
+
+    protected static function stripAnsi(string $text): string
+    {
+        return preg_replace('/\x1b\[[0-9;]*[A-Za-z]/', '', $text) ?? $text;
+    }
+
+    protected static function truncateForDisplay(string $text, int $maxWidth): string
+    {
+        if ($maxWidth <= 1 || mb_strlen($text) <= $maxWidth) {
+            return $text;
+        }
+        return mb_substr($text, 0, $maxWidth - 1) . '…';
     }
 
     /** @param array{repo: string, index: int, started: float} $entry */
