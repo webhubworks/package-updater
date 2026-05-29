@@ -131,7 +131,7 @@ final class UpdateRepoAction
             if ($onProgress !== null) {
                 $onProgress('step-start', null, 'ddev status: ' . ($detectedStatus ?? 'unknown'));
             }
-            $start = self::run(['ddev', 'start'], $repoPath, 900, $onProgress, 'ddev start');
+            $start = self::runDdevStart($repoPath, $onProgress);
             if (! $start->isSuccessful()) {
                 return self::fail($repoPath, $branch, 'ddev start', $start);
             }
@@ -957,6 +957,112 @@ final class UpdateRepoAction
     {
         return stripos($chunk, 'needs to run with administrative privileges') !== false
             || stripos($chunk, 'may need to enter your password for sudo') !== false;
+    }
+
+    /**
+     * Run `ddev start` with two safety nets:
+     *   1. A host-wide flock so only one worker at a time is in the start
+     *      window — protects the shared singletons (ddev-router, ddev-ssh-agent,
+     *      docker network, host-port bindings) from concurrent reconfiguration.
+     *   2. A retry for known-transient failures (router not ready, host port
+     *      already allocated, docker timeouts). Between retries we `ddev stop`
+     *      so the next attempt isn't fighting its own half-started container.
+     *
+     * @param  callable(string, ?string, ?string): void|null  $onProgress
+     */
+    private static function runDdevStart(string $repoPath, ?callable $onProgress): Process
+    {
+        $maxAttempts = 3;
+        $process = null;
+
+        for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
+            $label = $attempt === 1
+                ? 'ddev start'
+                : "ddev start (retry {$attempt}/{$maxAttempts})";
+
+            $process = self::withDdevStartLock(
+                $onProgress,
+                fn () => self::run(['ddev', 'start'], $repoPath, 900, $onProgress, $label),
+            );
+
+            if ($process->isSuccessful()) {
+                return $process;
+            }
+
+            if ($attempt === $maxAttempts || ! self::isTransientDdevStartFailure($process)) {
+                return $process;
+            }
+
+            if ($onProgress !== null) {
+                $onProgress('step-start', null, 'ddev start hit a transient error - running `ddev stop` and retrying');
+            }
+
+            // Stop first so the retry isn't racing against its own half-started
+            // containers. The stop result is intentionally ignored - if it
+            // fails, the next start attempt will surface the real problem.
+            self::run(['ddev', 'stop'], $repoPath, 120, $onProgress, 'ddev stop (cleanup before retry)');
+
+            sleep(3);
+        }
+
+        return $process;
+    }
+
+    /**
+     * Serialize the wrapped call across processes via flock on a host-wide
+     * file. Other workers that hit the lock get a one-line `step-start` so the
+     * spinner row doesn't silently sit idle.
+     *
+     * @param  callable(string, ?string, ?string): void|null  $onProgress
+     * @param  callable(): Process  $fn
+     */
+    private static function withDdevStartLock(?callable $onProgress, callable $fn): Process
+    {
+        $lockPath = sys_get_temp_dir() . '/package-updater-ddev-start.lock';
+        $handle = @fopen($lockPath, 'c');
+        if ($handle === false) {
+            return $fn();
+        }
+
+        try {
+            if (! @flock($handle, LOCK_EX | LOCK_NB)) {
+                if ($onProgress !== null) {
+                    $onProgress('step-start', null, 'waiting for another worker to finish `ddev start`...');
+                }
+                @flock($handle, LOCK_EX);
+            }
+            return $fn();
+        } finally {
+            @flock($handle, LOCK_UN);
+            @fclose($handle);
+        }
+    }
+
+    /**
+     * Signatures that point at concurrency / first-start races rather than
+     * structural problems (docker down, sudo, db mismatch, ...). Only these
+     * should trigger a retry - everything else surfaces via hintFor() with a
+     * user-actionable message.
+     */
+    private static function isTransientDdevStartFailure(Process $process): bool
+    {
+        $combined = $process->getOutput() . "\n" . $process->getErrorOutput();
+
+        $signatures = [
+            'port is already allocated',
+            'bind: address already in use',
+            'ddev-router failed to become ready',
+            'cannot start service ddev-router',
+            'context deadline exceeded',
+        ];
+
+        foreach ($signatures as $needle) {
+            if (stripos($combined, $needle) !== false) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /** @var resource|null */
