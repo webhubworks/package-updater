@@ -9,7 +9,6 @@ use Closure;
 use Illuminate\Console\OutputStyle;
 use Symfony\Component\Console\Formatter\OutputFormatter;
 use Symfony\Component\Console\Output\ConsoleOutputInterface;
-use Symfony\Component\Console\Output\ConsoleSectionOutput;
 use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Console\Terminal;
 use Symfony\Component\Process\PhpExecutableFinder;
@@ -26,7 +25,7 @@ use function Laravel\Prompts\warning;
  * local repos (e.g. `update:all`, `update:craft`, `remove`).
  *
  * Provides:
- *   - sequential and parallel runners (with a spinner section per worker)
+ *   - sequential and parallel runners (with a live spinner block per worker)
  *   - streaming-output formatter for child progress events
  *   - JSON-line parser for child-process results
  *   - common option prompts (parallel, keep-ddev, name-filter, open-prompt)
@@ -76,18 +75,9 @@ trait RunsBulkRepoTasks
         $php = (new PhpExecutableFinder())->find() ?: PHP_BINARY;
         $binary = base_path('package-updater');
         $consoleOutput = $this->getConsoleOutput();
+        $decorated = $consoleOutput !== null && $consoleOutput->isDecorated();
         $spinnerFrames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
         $tick = 0;
-
-        // Two sections: a top "history" section that completed workers' final
-        // rows append into (write-once, never overwritten) and a bottom "live"
-        // section that holds the spinner block for all currently-running
-        // workers. Because the live section is always the newest (bottom),
-        // overwriting it per-tick never triggers a reflow of other sections —
-        // which is what was causing the flicker / apparent re-ordering when
-        // each worker had its own growing section.
-        $historySection = $consoleOutput?->section();
-        $liveSection = $consoleOutput?->section();
 
         $queue = $items;
         /** @var list<array{process: Process, repo: string, index: int, started: float, buffer: string, lines: list<array{kind: string, text: string}>}> $running */
@@ -96,73 +86,94 @@ trait RunsBulkRepoTasks
         $total = count($items);
         $started = 0;
 
-        while (! empty($queue) || ! empty($running)) {
-            while (count($running) < $workers && ! empty($queue)) {
-                $item = array_shift($queue);
-                $repo = $pathOf($item);
-                $cmd = $buildCmd($item, $php, $binary);
-                $process = new Process($cmd);
-                $process->setTimeout(3600);
-                $process->start();
-                $started++;
+        // Manual line accounting for the bottom "live" block. We bypass
+        // Symfony's ConsoleSectionOutput on purpose: every section overwrite
+        // does `cursor-up + erase-to-end-of-screen + rewrite`, which leaves
+        // the live region visibly blank between the erase and the rewrite —
+        // that gap is what looks like flicker once the block is ~18 lines
+        // tall (3 workers × 6 rows). Instead we overwrite each line in place
+        // with `\x1b[K` so the terminal never sees an empty frame.
+        $liveLineCount = 0;
 
-                $running[] = [
-                    'process' => $process,
-                    'repo' => $repo,
-                    'index' => $started,
-                    'started' => microtime(true),
-                    'buffer' => '',
-                    'lines' => [],
-                ];
-            }
+        if ($decorated) {
+            // Hide the cursor for the whole run so the per-tick redraw
+            // doesn't show it skipping across the screen.
+            $consoleOutput->write("\x1b[?25l", false, OutputInterface::OUTPUT_RAW);
+        }
 
-            usleep(200_000);
-            $tick++;
+        try {
+            while (! empty($queue) || ! empty($running)) {
+                while (count($running) < $workers && ! empty($queue)) {
+                    $item = array_shift($queue);
+                    $repo = $pathOf($item);
+                    $cmd = $buildCmd($item, $php, $binary);
+                    $process = new Process($cmd);
+                    $process->setTimeout(3600);
+                    $process->start();
+                    $started++;
 
-            foreach ($running as $key => $entry) {
-                $chunk = $entry['process']->getIncrementalOutput();
-                if ($chunk === '') {
-                    continue;
+                    $running[] = [
+                        'process' => $process,
+                        'repo' => $repo,
+                        'index' => $started,
+                        'started' => microtime(true),
+                        'buffer' => '',
+                        'lines' => [],
+                    ];
                 }
-                $running[$key]['buffer'] .= $chunk;
-                while (($pos = strpos($running[$key]['buffer'], "\n")) !== false) {
-                    $line = substr($running[$key]['buffer'], 0, $pos);
-                    $running[$key]['buffer'] = substr($running[$key]['buffer'], $pos + 1);
-                    foreach ($this->extractProgressLines($line) as $rendered) {
-                        $running[$key]['lines'][] = $rendered;
+
+                usleep(200_000);
+                $tick++;
+
+                foreach ($running as $key => $entry) {
+                    $chunk = $entry['process']->getIncrementalOutput();
+                    if ($chunk === '') {
+                        continue;
                     }
-                    if (count($running[$key]['lines']) > 5) {
-                        $running[$key]['lines'] = array_slice($running[$key]['lines'], -5);
+                    $running[$key]['buffer'] .= $chunk;
+                    while (($pos = strpos($running[$key]['buffer'], "\n")) !== false) {
+                        $line = substr($running[$key]['buffer'], 0, $pos);
+                        $running[$key]['buffer'] = substr($running[$key]['buffer'], $pos + 1);
+                        foreach ($this->extractProgressLines($line) as $rendered) {
+                            $running[$key]['lines'][] = $rendered;
+                        }
+                        if (count($running[$key]['lines']) > 5) {
+                            $running[$key]['lines'] = array_slice($running[$key]['lines'], -5);
+                        }
+                    }
+                }
+
+                foreach ($running as $key => $entry) {
+                    if ($entry['process']->isRunning()) {
+                        continue;
+                    }
+
+                    $result = $this->parseChildOutput($entry['process']->getOutput(), $entry['repo']);
+                    $results[] = $result;
+                    unset($running[$key]);
+
+                    $finalLine = $this->formatRepoLine($result, $entry['index'], $total, microtime(true) - $entry['started']);
+                    $this->writeHistoryLine($consoleOutput, $decorated, $liveLineCount, $finalLine);
+                }
+
+                $running = array_values($running);
+
+                if ($decorated) {
+                    if (! empty($running)) {
+                        $frame = $spinnerFrames[$tick % count($spinnerFrames)];
+                        $blocks = array_map(
+                            fn (array $entry) => $this->formatRunningSection($entry, $frame, $total),
+                            $running,
+                        );
+                        $this->refreshLiveBlock($consoleOutput, $liveLineCount, implode("\n", $blocks));
+                    } else {
+                        $this->clearLiveBlock($consoleOutput, $liveLineCount);
                     }
                 }
             }
-
-            foreach ($running as $key => $entry) {
-                if ($entry['process']->isRunning()) {
-                    continue;
-                }
-
-                $result = $this->parseChildOutput($entry['process']->getOutput(), $entry['repo']);
-                $results[] = $result;
-                unset($running[$key]);
-
-                $finalLine = $this->formatRepoLine($result, $entry['index'], $total, microtime(true) - $entry['started']);
-                $this->sectionWriteln($historySection, $finalLine);
-            }
-
-            $running = array_values($running);
-
-            if ($liveSection !== null) {
-                if (! empty($running)) {
-                    $frame = $spinnerFrames[$tick % count($spinnerFrames)];
-                    $blocks = array_map(
-                        fn (array $entry) => $this->formatRunningSection($entry, $frame, $total),
-                        $running,
-                    );
-                    $this->sectionOverwrite($liveSection, implode("\n", $blocks));
-                } else {
-                    $liveSection->clear();
-                }
+        } finally {
+            if ($decorated && $consoleOutput !== null) {
+                $consoleOutput->write("\x1b[?25h", false, OutputInterface::OUTPUT_RAW);
             }
         }
 
@@ -170,31 +181,69 @@ trait RunsBulkRepoTasks
     }
 
     /**
-     * Write a freshly-formatted message into a console section. Pre-formats
-     * through the parent OutputStyle's formatter and passes OUTPUT_RAW to the
-     * section so ANSI codes always reach the underlying doWrite, bypassing any
-     * path where the section's own formatter mis-handles `<fg=...>` tags and
-     * prints them literally. Falls back to $this->line() when no section
-     * (non-TTY / parallel disabled).
+     * Emit a completed worker's final row above the live block. When the
+     * live block is non-empty, it's erased first (history lines should
+     * appear above, then the live block gets re-drawn fresh by the next
+     * tick). When the output isn't a TTY this falls back to a plain line.
      */
-    protected function sectionWriteln(?ConsoleSectionOutput $section, string $message): void
+    protected function writeHistoryLine(?ConsoleOutputInterface $consoleOutput, bool $decorated, int &$liveLineCount, string $line): void
     {
-        if ($section === null) {
-            $this->line($message);
+        if (! $decorated || $consoleOutput === null) {
+            $this->line($line);
             return;
         }
-        $section->writeln($this->output->getFormatter()->format($message), OutputInterface::OUTPUT_RAW);
+
+        $formatted = $this->output->getFormatter()->format($line);
+        $buffer = '';
+        if ($liveLineCount > 0) {
+            $buffer .= sprintf("\x1b[%dA\r\x1b[0J", $liveLineCount);
+            $liveLineCount = 0;
+        }
+        $buffer .= $formatted . "\n";
+        $consoleOutput->write($buffer, false, OutputInterface::OUTPUT_RAW);
     }
 
     /**
-     * Re-render an existing section line in place. Equivalent to
-     * $section->overwrite(...) but pre-formats the message so the ANSI codes
-     * reach doWrite intact (see sectionWriteln for the rationale).
+     * Repaint the live block in place. Bypasses Symfony's section logic
+     * because that path does erase-then-redraw, which is visibly blank for
+     * one terminal frame and reads as flicker once the block is tall. We
+     * overwrite each existing line by writing the new content followed by
+     * `\x1b[K` (clear-to-end-of-line) so the terminal never sees an empty
+     * region. Trailing stale lines from a previously taller block are
+     * removed with `\x1b[0J` at the end. The whole update is sent as a
+     * single write so cursor moves don't get split across frames.
      */
-    protected function sectionOverwrite(ConsoleSectionOutput $section, string $message): void
+    protected function refreshLiveBlock(ConsoleOutputInterface $consoleOutput, int &$liveLineCount, string $content): void
     {
-        $section->clear();
-        $section->writeln($this->output->getFormatter()->format($message), OutputInterface::OUTPUT_RAW);
+        $formatted = $this->output->getFormatter()->format($content);
+        $lines = explode("\n", $formatted);
+        $newCount = count($lines);
+
+        $buffer = '';
+        if ($liveLineCount > 0) {
+            $buffer .= sprintf("\x1b[%dA\r", $liveLineCount);
+        }
+        foreach ($lines as $line) {
+            $buffer .= $line . "\x1b[K\n";
+        }
+        if ($liveLineCount > $newCount) {
+            $buffer .= "\x1b[0J";
+        }
+        $consoleOutput->write($buffer, false, OutputInterface::OUTPUT_RAW);
+        $liveLineCount = $newCount;
+    }
+
+    protected function clearLiveBlock(ConsoleOutputInterface $consoleOutput, int &$liveLineCount): void
+    {
+        if ($liveLineCount === 0) {
+            return;
+        }
+        $consoleOutput->write(
+            sprintf("\x1b[%dA\r\x1b[0J", $liveLineCount),
+            false,
+            OutputInterface::OUTPUT_RAW,
+        );
+        $liveLineCount = 0;
     }
 
     /**
