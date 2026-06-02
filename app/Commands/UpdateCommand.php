@@ -47,8 +47,10 @@ class UpdateCommand extends Command
             return self::FAILURE;
         }
         if (trim($status->getOutput()) !== '') {
-            $this->error('Working tree is dirty — commit or stash before running update.');
-            return self::FAILURE;
+            warning('Working tree is dirty - uncommitted changes will be mixed into this update.');
+            if (! $this->option('yes') && ! confirm('Continue anyway?', default: false)) {
+                return self::FAILURE;
+            }
         }
 
         $useDdev = ! $this->option('no-ddev') && is_file($cwd.'/.ddev/config.yaml');
