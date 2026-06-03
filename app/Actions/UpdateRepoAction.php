@@ -123,6 +123,10 @@ final class UpdateRepoAction
 
         $pull = self::run(['git', 'pull', '--ff-only', 'origin', $branch], $repoPath, 600, $onProgress, "git pull --ff-only origin {$branch}");
         if (! $pull->isSuccessful()) {
+            if (self::isMissingRemoteRef($pull)) {
+                return self::diagnoseMissingRemoteBranch($repoPath, $branch, $pull, $onProgress);
+            }
+
             return self::fail($repoPath, $branch, 'git pull', $pull);
         }
 
@@ -923,6 +927,57 @@ final class UpdateRepoAction
         return is_string($status) ? strtolower($status) : null;
     }
 
+    private static function isMissingRemoteRef(Process $process): bool
+    {
+        return stripos(
+            $process->getOutput() . "\n" . $process->getErrorOutput(),
+            "couldn't find remote ref",
+        ) !== false;
+    }
+
+    /**
+     * The target branch no longer exists on origin - typically renamed or
+     * deleted server-side, with a stale local tracking ref hiding the fact.
+     * Prune so the local view matches reality, then fail with the list of
+     * branches that DO exist so the user can check the right one out.
+     *
+     * We deliberately do not auto-switch to a similarly named branch: picking
+     * a replacement by name is a guess, and silently moving the branch would
+     * change which branch the package update gets committed to.
+     */
+    private static function diagnoseMissingRemoteBranch(string $repoPath, string $branch, Process $pull, ?callable $onProgress): RepoUpdateResult
+    {
+        // Non-destructive: --prune only drops stale remote-tracking refs
+        // (local caches of server branches); it never touches local branches
+        // or the working tree.
+        self::run(['git', 'fetch', '--prune', 'origin'], $repoPath, 120, $onProgress, 'git fetch --prune origin', stream: false);
+
+        // ls-remote queries the server directly, so it reflects the live
+        // branches even if the tracking refs were stale a moment ago.
+        $live = self::run(['git', 'ls-remote', '--heads', 'origin'], $repoPath, 120, null, '', stream: false);
+        $branches = [];
+        if ($live->isSuccessful()) {
+            foreach (explode("\n", trim($live->getOutput())) as $line) {
+                if (preg_match('#refs/heads/(.+)$#', trim($line), $m)) {
+                    $branches[] = $m[1];
+                }
+            }
+        }
+
+        $logPath = self::writeLog($repoPath, 'git-pull', $pull);
+
+        $message = "git pull failed: branch '{$branch}' no longer exists on origin (likely renamed or deleted).";
+        $message .= $branches !== []
+            ? ' Live branches: ' . implode(', ', $branches) . '. Check one out (`git checkout <branch>`) and re-run.'
+            : ' Run `git fetch --prune` and check out a branch that still exists, then re-run.';
+
+        if ($logPath !== null) {
+            $message .= " (log: {$logPath})";
+        }
+
+        return RepoUpdateResult::failed($repoPath, $message, $branch, $logPath);
+    }
+
     private static function pickBranch(string $repoPath): ?string
     {
         foreach (self::BranchCandidates as $candidate) {
@@ -1245,6 +1300,9 @@ final class UpdateRepoAction
 
             'your local changes to the following files would be overwritten by merge'
                 => 'local changes block git pull — should have been caught by the dirty-check; if not, commit or stash manually',
+
+            "couldn't find remote ref"
+                => 'target branch no longer exists on origin (likely renamed/deleted) — `git fetch --prune`, then check out a branch that still exists',
 
             'refusing to merge unrelated histories'
                 => 'branch divergence — needs manual `git pull --allow-unrelated-histories` or a rebase',
