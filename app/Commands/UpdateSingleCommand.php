@@ -17,7 +17,8 @@ class UpdateSingleCommand extends Command
         {--craft-command=}
         {--crawler-command=}
         {--composer-sweep=*}
-        {--commit}';
+        {--commit}
+        {--push}';
 
     protected $description = 'Internal: update a single repo and emit JSON result on stdout';
 
@@ -44,6 +45,7 @@ class UpdateSingleCommand extends Command
             is_string($crawlerCommand) && $crawlerCommand !== '' ? $crawlerCommand : null,
             (bool) $this->option('commit'),
             sweepPatterns: $sweepPatterns ?: null,
+            push: (bool) $this->option('push'),
         );
 
         $this->output->writeln(json_encode($result->toArray()));

@@ -11,7 +11,8 @@ class RemoveSingleCommand extends Command
     protected $signature = 'remove:single
         {repoPath}
         {--package=* : name=dev pairs, e.g. --package=laravel-lang/lang=0 --package=laravel-lang/common=1}
-        {--stop-ddev}';
+        {--stop-ddev}
+        {--push}';
 
     protected $description = 'Internal: composer remove in a single repo and emit JSON result on stdout';
 
@@ -43,6 +44,7 @@ class RemoveSingleCommand extends Command
             keepDdevRunning: ! $this->option('stop-ddev'),
             commit: true,
             removeSpec: $spec,
+            push: (bool) $this->option('push'),
         );
 
         $this->output->writeln(json_encode($result->toArray()));

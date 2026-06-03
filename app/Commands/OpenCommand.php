@@ -88,7 +88,7 @@ class OpenCommand extends Command
             $tags[] = 'failed';
         } elseif ($r->status === 'success') {
             if ($r->committed) {
-                $tags[] = 'committed';
+                $tags[] = $r->pushed ? 'pushed' : 'committed';
             } elseif ($r->hasUncommittedChanges) {
                 $tags[] = 'uncommitted';
             }

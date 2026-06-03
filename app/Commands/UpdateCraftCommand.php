@@ -29,6 +29,8 @@ class UpdateCraftCommand extends UpdateAllCommand
         {--craft-command= : Full shell command to run in each repo (skips the editable-command prompt). Defaults to `ddev php craft update <handle> --interactive=0 --with-expired --minor-only --backup=1`.}
         {--commit : After a successful run, commit "Package updates" with a body listing what changed (skips the prompt)}
         {--no-commit : Skip the end-of-run commit step (skips the prompt)}
+        {--push : After committing, push the commit for any error-free repo (skips the prompt)}
+        {--no-push : Skip the end-of-run push step (skips the prompt)}
         {--crawl-repo=* : After composer prep, run the site-crawler only in these repo path(s). Skips the interactive crawler-selection prompt.}
         {--no-crawl : Skip the site-crawler step entirely.}
         {--crawler-command= : Full shell command to run as the crawler (skips the editable-command prompt). Defaults to `site-crawler crawl:ddev --exclude="assets,variant,index.php,downloads,actions,.pdf"`.}
@@ -124,6 +126,7 @@ class UpdateCraftCommand extends UpdateAllCommand
         $parallel = $this->resolveParallel();
         $keepDdevRunning = $this->resolveKeepDdevRunning();
         $commit = $this->resolveCommit();
+        $push = $this->resolvePush($commit);
         $crawlPaths = $this->resolveCrawlSelection($matches);
         $crawlSet = array_flip($crawlPaths);
 
@@ -175,6 +178,8 @@ class UpdateCraftCommand extends UpdateAllCommand
             'no-composer-sweep' => empty($sweepPatterns),
             'commit' => $commit,
             'no-commit' => ! $commit,
+            'push' => $push,
+            'no-push' => ! $push,
             'yes' => true,
         ]);
 
@@ -196,9 +201,10 @@ class UpdateCraftCommand extends UpdateAllCommand
             crawlerCommandLine: isset($crawlSet[$repo]) ? $crawlerCommandLine : null,
             commit: $commit,
             sweepPatterns: $sweepPatterns,
+            push: $push,
         );
 
-        $buildCmd = function (string $repo, string $php, string $binary) use ($packagesByPath, $craftCommandLine, $keepDdevRunning, $crawlSet, $crawlerCommandLine, $commit, $sweepPatterns): array {
+        $buildCmd = function (string $repo, string $php, string $binary) use ($packagesByPath, $craftCommandLine, $keepDdevRunning, $crawlSet, $crawlerCommandLine, $commit, $sweepPatterns, $push): array {
             $cmd = [$php, $binary, 'update:single', $repo, $packagesByPath[$repo], '--craft-command=' . $craftCommandLine];
             if (! $keepDdevRunning) {
                 $cmd[] = '--stop-ddev';
@@ -208,6 +214,9 @@ class UpdateCraftCommand extends UpdateAllCommand
             }
             if ($commit) {
                 $cmd[] = '--commit';
+            }
+            if ($push) {
+                $cmd[] = '--push';
             }
             foreach ($sweepPatterns as $pattern) {
                 $cmd[] = '--composer-sweep=' . $pattern;

@@ -516,6 +516,40 @@ trait RunsBulkRepoTasks
     }
 
     /**
+     * Decide whether to push the resulting commit in each repo. Asked right
+     * after resolveCommit() and only relevant when committing is on — a push
+     * needs a commit to push. The push itself is gated inside UpdateRepoAction
+     * on an error-free run (no failing tests/PHPStan/crawler errors).
+     * Precedence:
+     *   1. $commit is false  (returns false — nothing to push)
+     *   2. --no-push         (returns false)
+     *   3. --push            (returns true)
+     *   4. --yes             (defaults to true)
+     *   5. confirm()         (default: yes)
+     */
+    protected function resolvePush(bool $commit): bool
+    {
+        if (! $commit) {
+            return false;
+        }
+        if ($this->option('no-push')) {
+            return false;
+        }
+        if ($this->option('push')) {
+            return true;
+        }
+        if ($this->option('yes')) {
+            return true;
+        }
+
+        return confirm(
+            label: 'Push the commit if no error occur?',
+            default: true,
+            hint: 'Runs `git push origin <branch>` after committing — skipped for any repo whose run had failing tests, PHPStan errors, or a site-crawler failure.',
+        );
+    }
+
+    /**
      * Right before the run starts, scan every selected repo for uncommitted
      * changes and surface the list in one block so the user has a chance to
      * commit/stash before any work begins. Without this gate, dirty repos

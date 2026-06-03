@@ -27,6 +27,7 @@ final readonly class RepoUpdateResult
         /** @var list<array{name: string, from: string, to: string}> */
         public array $packageUpdates = [],
         public bool $committed = false,
+        public bool $pushed = false,
     ) {}
 
     public static function success(
@@ -47,6 +48,7 @@ final readonly class RepoUpdateResult
         ?string $transcriptPath = null,
         array $packageUpdates = [],
         bool $committed = false,
+        bool $pushed = false,
     ): self {
         return new self(
             repoPath: $path,
@@ -68,6 +70,7 @@ final readonly class RepoUpdateResult
             transcriptPath: $transcriptPath,
             packageUpdates: $packageUpdates,
             committed: $committed,
+            pushed: $pushed,
         );
     }
 
@@ -119,6 +122,7 @@ final readonly class RepoUpdateResult
             'transcriptPath' => $this->transcriptPath,
             'packageUpdates' => $this->packageUpdates,
             'committed' => $this->committed,
+            'pushed' => $this->pushed,
         ];
     }
 
@@ -146,6 +150,7 @@ final readonly class RepoUpdateResult
             transcriptPath: $data['transcriptPath'] ?? null,
             packageUpdates: is_array($data['packageUpdates'] ?? null) ? array_values($data['packageUpdates']) : [],
             committed: (bool) ($data['committed'] ?? false),
+            pushed: (bool) ($data['pushed'] ?? false),
         );
     }
 }

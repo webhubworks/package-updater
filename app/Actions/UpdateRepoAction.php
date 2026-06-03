@@ -30,6 +30,10 @@ final class UpdateRepoAction
      * @param  bool  $commit  When true (and craft prints a "Performing N updates:" list, or in
      *                        remove mode), the action stages everything and commits with a title
      *                        that reflects what happened ("Package updates" / "Remove <pkg>").
+     * @param  bool  $push  When true, the resulting commit is pushed to its branch — but only when
+     *                      the run produced a commit AND no errors occurred (no failing tests, no
+     *                      PHPStan errors, no site-crawler failure or 5xx responses). Has no effect
+     *                      unless $commit is true.
      * @param  list<array{name: string, dev: bool}>|null  $removeSpec  When set, the action runs
      *                                                                  `composer remove [--dev] <pkgs>`
      *                                                                  (grouped by the dev flag) instead
@@ -57,10 +61,11 @@ final class UpdateRepoAction
         bool $commit = false,
         ?array $removeSpec = null,
         ?array $sweepPatterns = null,
+        bool $push = false,
     ): RepoUpdateResult {
         $transcriptPath = self::openTranscript($repoPath);
         try {
-            $result = self::doUpdate($repoPath, $package, $onProgress, $withAllDependencies, $updatePackage, $keepDdevRunning, $craftCommandLine, $crawlerCommandLine, $commit, $removeSpec, $sweepPatterns);
+            $result = self::doUpdate($repoPath, $package, $onProgress, $withAllDependencies, $updatePackage, $keepDdevRunning, $craftCommandLine, $crawlerCommandLine, $commit, $removeSpec, $sweepPatterns, $push);
         } finally {
             self::closeTranscript();
         }
@@ -87,6 +92,7 @@ final class UpdateRepoAction
         bool $commit,
         ?array $removeSpec = null,
         ?array $sweepPatterns = null,
+        bool $push = false,
     ): RepoUpdateResult {
         $updatePackage = $updatePackage ?? $package;
 
@@ -182,6 +188,7 @@ final class UpdateRepoAction
         $testsSummary = null;
         $phpstanErrors = null;
         $prepLogPath = null;
+        $prepHadFailures = false;
 
         if (self::hasComposerScript($repoPath, 'prep')) {
             $prepRan = true;
@@ -204,6 +211,7 @@ final class UpdateRepoAction
             $phpstanErrors = $outcome['phpstanErrors'];
 
             if ($outcome['hasFailures']) {
+                $prepHadFailures = true;
                 $prepLogPath = self::writeLog($repoPath, 'composer-prep', $prep);
                 if ($testsSummary === null) {
                     $testsSummary = $prep->isSuccessful()
@@ -252,6 +260,24 @@ final class UpdateRepoAction
             }
         }
 
+        // Push only a clean run: a commit was actually produced and nothing in
+        // the run flagged an error (failing tests, PHPStan errors, a crawler
+        // failure or 5xx response). Anything broken stays local for review.
+        $pushed = false;
+        if ($push && $committed) {
+            $runHadErrors = $prepHadFailures
+                || ($testsFailed ?? 0) > 0
+                || ($phpstanErrors ?? 0) > 0
+                || $crawlerFailed
+                || ! empty($crawlerServerErrorUrls);
+
+            if (! $runHadErrors) {
+                $pushed = self::pushBranch($repoPath, $branch, $onProgress);
+            } elseif ($onProgress !== null) {
+                $onProgress('step-start', null, 'skipping push — run reported errors');
+            }
+        }
+
         $afterStatus = self::run(['git', 'status', '--porcelain'], $repoPath, 60, null, '', stream: false);
         $hasUncommittedChanges = trim($afterStatus->getOutput()) !== '';
 
@@ -272,6 +298,7 @@ final class UpdateRepoAction
             $crawlerServerErrorUrls,
             packageUpdates: $packageUpdates,
             committed: $committed,
+            pushed: $pushed,
         );
     }
 
@@ -510,6 +537,26 @@ final class UpdateRepoAction
         );
 
         return $commit->isSuccessful();
+    }
+
+    /**
+     * Push the current branch to origin. Called only after a successful commit
+     * on an error-free run. Returns true when the push succeeds; false on any
+     * failure (non-fatal — the commit stays local for a manual push).
+     *
+     * @param  callable(string, ?string, ?string): void|null  $onProgress
+     */
+    private static function pushBranch(string $repoPath, string $branch, ?callable $onProgress): bool
+    {
+        $push = self::run(
+            ['git', 'push', 'origin', $branch],
+            $repoPath,
+            600,
+            $onProgress,
+            "git push origin {$branch}",
+        );
+
+        return $push->isSuccessful();
     }
 
     /**

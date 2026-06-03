@@ -37,6 +37,8 @@ class UpdateAllCommand extends Command
         {--stop-ddev : Stop the ddev project in each repo after a successful update (default: keep running)}
         {--commit : After a successful update, commit "Package updates" with a body listing what changed (skips the prompt)}
         {--no-commit : Skip the end-of-run commit step (skips the prompt)}
+        {--push : After committing, push the commit for any error-free repo (skips the prompt)}
+        {--no-push : Skip the end-of-run push step (skips the prompt)}
         {--open : After the run, open every repo with uncommitted changes in GitKraken (skips the prompt)}
         {--no-open : Skip the end-of-run "open in GitKraken" prompt entirely}
         {--yes : Skip the confirmation prompt}';
@@ -185,6 +187,7 @@ class UpdateAllCommand extends Command
         $parallel = $this->resolveParallel();
         $keepDdevRunning = $this->resolveKeepDdevRunning();
         $commit = $this->resolveCommit();
+        $push = $this->resolvePush($commit);
 
         $repos = array_map(fn ($m) => $m['path'], $matches);
         $mode = $parallel === 1 ? 'sequentially' : "with {$parallel} workers in parallel";
@@ -210,6 +213,8 @@ class UpdateAllCommand extends Command
             'no-ssh-auth' => (bool) $this->option('no-ssh-auth'),
             'commit' => $commit,
             'no-commit' => ! $commit,
+            'push' => $push,
+            'no-push' => ! $push,
             'yes' => true,
         ]);
 
@@ -225,9 +230,10 @@ class UpdateAllCommand extends Command
             updatePackage: $updatePackage,
             keepDdevRunning: $keepDdevRunning,
             commit: $commit,
+            push: $push,
         );
 
-        $buildCmd = function (string $repo, string $php, string $binary) use ($package, $withAllDependencies, $updatePackage, $keepDdevRunning, $commit): array {
+        $buildCmd = function (string $repo, string $php, string $binary) use ($package, $withAllDependencies, $updatePackage, $keepDdevRunning, $commit, $push): array {
             $cmd = [$php, $binary, 'update:single', $repo, $package];
             if ($withAllDependencies) {
                 $cmd[] = '--with-all-dependencies';
@@ -240,6 +246,9 @@ class UpdateAllCommand extends Command
             }
             if ($commit) {
                 $cmd[] = '--commit';
+            }
+            if ($push) {
+                $cmd[] = '--push';
             }
             return $cmd;
         };
@@ -552,7 +561,7 @@ class UpdateAllCommand extends Command
                     $name = basename($r->repoPath);
                     $count = count($r->packageUpdates);
                     $marker = $r->committed
-                        ? '<fg=green>✓ committed</>'
+                        ? ($r->pushed ? '<fg=green>✓ committed + pushed</>' : '<fg=green>✓ committed</>')
                         : '<fg=yellow>⚠ uncommitted</>';
                     $this->line("  <options=bold>{$name}</> — {$count} update(s) · {$marker}");
                     foreach ($r->packageUpdates as $u) {
@@ -692,9 +701,10 @@ class UpdateAllCommand extends Command
 
         if ($r->committed) {
             $count = count($r->packageUpdates);
-            $parts[] = $count > 0
+            $committedNote = $count > 0
                 ? sprintf('committed %d update(s)', $count)
                 : 'committed (no parsed updates)';
+            $parts[] = $r->pushed ? $committedNote . ' + pushed' : $committedNote;
         } elseif ($r->hasUncommittedChanges) {
             $parts[] = 'uncommitted changes';
         }

@@ -32,6 +32,8 @@ class RemoveCommand extends Command
         {--filter-name= : Keep only repos whose composer.json "name" contains this substring}
         {--no-ssh-auth : Skip the initial `ddev auth ssh` step}
         {--stop-ddev : Stop the ddev project in each repo after a successful remove (default: keep running)}
+        {--push : After committing the removal, push the commit for any error-free repo (skips the prompt)}
+        {--no-push : Skip the end-of-run push step (skips the prompt)}
         {--open : After the run, open every repo with uncommitted changes in GitKraken (skips the prompt)}
         {--no-open : Skip the end-of-run "open in GitKraken" prompt entirely}
         {--yes : Skip the confirmation prompt}';
@@ -131,6 +133,8 @@ class RemoveCommand extends Command
 
         $parallel = $this->resolveParallel();
         $keepDdevRunning = $this->resolveKeepDdevRunning('remove');
+        // Removals always commit, so the push question stands on its own here.
+        $push = $this->resolvePush(true);
 
         $mode = $parallel === 1 ? 'sequentially' : "with {$parallel} workers in parallel";
 
@@ -145,6 +149,8 @@ class RemoveCommand extends Command
             'repo' => array_map(fn ($p) => $p['path'], $plans),
             'stop-ddev' => ! $keepDdevRunning,
             'no-ssh-auth' => (bool) $this->option('no-ssh-auth'),
+            'push' => $push,
+            'no-push' => ! $push,
             'yes' => true,
         ]);
 
@@ -159,15 +165,19 @@ class RemoveCommand extends Command
             keepDdevRunning: $keepDdevRunning,
             commit: true,
             removeSpec: $plan['spec'],
+            push: $push,
         );
 
-        $buildCmd = function (array $plan, string $php, string $binary) use ($keepDdevRunning): array {
+        $buildCmd = function (array $plan, string $php, string $binary) use ($keepDdevRunning, $push): array {
             $cmd = [$php, $binary, 'remove:single', $plan['path']];
             foreach ($plan['spec'] as $entry) {
                 $cmd[] = '--package=' . $entry['name'] . '=' . ($entry['dev'] ? '1' : '0');
             }
             if (! $keepDdevRunning) {
                 $cmd[] = '--stop-ddev';
+            }
+            if ($push) {
+                $cmd[] = '--push';
             }
             return $cmd;
         };
@@ -347,7 +357,7 @@ class RemoveCommand extends Command
     private static function successNote(RepoUpdateResult $r): string
     {
         if ($r->committed) {
-            return '<fg=green>✓ committed</>';
+            return $r->pushed ? '<fg=green>✓ committed + pushed</>' : '<fg=green>✓ committed</>';
         }
 
         return $r->hasUncommittedChanges ? 'uncommitted changes' : '-';
