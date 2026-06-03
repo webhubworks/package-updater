@@ -964,6 +964,19 @@ final class UpdateRepoAction
             $process->setPty(true);
         }
 
+        // Force git to be non-interactive. A repo with an HTTPS remote (or a key
+        // that needs a passphrase) makes `git pull`/`git push` invoke a credential
+        // helper that pops a GUI dialog. That helper inherits this Process's
+        // stdout/stderr pipe, so even after git prints "fatal: User cancelled
+        // dialog." and exits, the pipe never hits EOF and run() blocks until the
+        // command timeout fires - hanging the whole (parallel) run. These vars
+        // make git fail fast instead, surfacing as a normal error with a hint.
+        $process->setEnv([
+            'GIT_TERMINAL_PROMPT' => '0',                // no terminal credential/host-key prompt
+            'GCM_INTERACTIVE' => 'never',                // Git Credential Manager: never show a GUI dialog
+            'GIT_SSH_COMMAND' => 'ssh -oBatchMode=yes',  // SSH never prompts for a passphrase/host key
+        ]);
+
         if ($stream) {
             // Stream chunks even when no $onProgress is set (e.g. inside
             // update:single subprocesses) so the sudo-prompt detector can
@@ -1205,6 +1218,18 @@ final class UpdateRepoAction
 
             'permission denied (publickey)'
                 => 'SSH auth failed — load the right key into the host agent (`ssh-add ~/.ssh/<key>`); composer-side issues need `ddev auth ssh`',
+
+            'could not read username'
+                => 'git auth failed on an HTTPS remote — cache credentials (`git credential approve`) or switch the remote to SSH (`git remote set-url origin git@<host>:<path>.git`)',
+
+            'authentication failed'
+                => 'git auth failed on an HTTPS remote — cache credentials (`git credential approve`) or switch the remote to SSH (`git remote set-url origin git@<host>:<path>.git`)',
+
+            'user cancelled dialog'
+                => 'git auth failed on an HTTPS remote — cache credentials (`git credential approve`) or switch the remote to SSH (`git remote set-url origin git@<host>:<path>.git`)',
+
+            'terminal prompts disabled'
+                => 'git needs credentials it cannot get non-interactively — cache them (`git credential approve`) or switch the remote to SSH (`git remote set-url origin git@<host>:<path>.git`)',
 
             'cannot connect to the docker daemon'
                 => 'Docker is not running — start Docker Desktop',
