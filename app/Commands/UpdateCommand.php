@@ -463,16 +463,18 @@ class UpdateCommand extends Command
     }
 
     /**
-     * Parses composer's "Package operations" / "Lock file operations" lines:
+     * Parses composer's "Lock file operations" lines:
      *
      *   - Upgrading vendor/foo (1.0.0 => 1.0.1)
      *   - Downgrading vendor/foo (1.0.1 => 1.0.0)
      *   - Installing vendor/foo (1.0.0)
      *   - Removing vendor/foo (1.0.0)
      *
-     * Composer prints these twice (once for lock-file ops, once for package
-     * ops). De-dupe by name; an upgrade always wins over a later install line
-     * for the same package.
+     * Only the "Lock file operations" block is read — it's the one that mirrors
+     * what changed in composer.lock (and thus the commit). The later "Package
+     * operations" block reflects the local vendor tree catching up to the lock,
+     * which on a repo whose lock is already ahead of vendor balloons into
+     * unrelated packages the commit never touches. De-dupe by name.
      *
      * @return list<array{kind: string, name: string, from: ?string, to: ?string}>
      */
@@ -481,9 +483,27 @@ class UpdateCommand extends Command
         $stripped = preg_replace('/\x1b\[[0-9;]*[A-Za-z]/', '', $output) ?? $output;
         $lines = preg_split("/\r\n|\r|\n/", $stripped) ?: [];
 
+        $sawLockHeader = false;
+        $inLockSection = false;
         $byName = [];
         foreach ($lines as $line) {
             $trimmed = ltrim($line);
+
+            if (preg_match('/^Lock file operations:/i', $trimmed)) {
+                $sawLockHeader = true;
+                $inLockSection = true;
+                continue;
+            }
+            if ($inLockSection && preg_match('/^(Writing lock file|Package operations:|Installing dependencies)/i', $trimmed)) {
+                $inLockSection = false;
+                continue;
+            }
+            // Once we've seen the lock block, ignore everything outside it. If
+            // composer never printed that header (very old/unusual output),
+            // fall back to scanning every bullet line.
+            if ($sawLockHeader && ! $inLockSection) {
+                continue;
+            }
             if (! str_starts_with($trimmed, '- ')) {
                 continue;
             }

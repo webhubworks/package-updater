@@ -694,14 +694,21 @@ final class UpdateRepoAction
     }
 
     /**
-     * Parses composer's update list from `composer update` output, picking up
-     * the `  - Upgrading vendor/pkg (a => b)` / `Downgrading` lines composer
-     * emits for both the "Lock file operations" and "Package operations"
-     * blocks. The same package shows up in both blocks — we dedupe by name and
-     * keep the first occurrence so each package appears once in the commit
-     * body. Newly-installed packages (no `=>`) are skipped because the
-     * "from => to" shape is what the commit body expects; that's rare for
-     * `composer update` and easy to spot in the diff if it happens.
+     * Parses composer's update list from `composer update` output, reading only
+     * the `  - Upgrading vendor/pkg (a => b)` / `Downgrading` lines inside the
+     * "Lock file operations" block.
+     *
+     * That block is the one — and only — thing that reflects what actually
+     * changed in composer.lock, which is exactly what the commit captures. The
+     * later "Package operations" block (composer installing/upgrading the
+     * vendor tree from the lock) is deliberately ignored: when a repo's
+     * composer.lock is already ahead of its installed vendor dir — e.g. right
+     * after the `git pull` at the start of a run — that block lists every
+     * package whose *installed* version moves to catch up to the lock, which
+     * balloons into dozens of unrelated packages that the commit never touches.
+     *
+     * Newly-installed packages (no `=>`) are skipped because the "from => to"
+     * shape is what the commit body expects.
      *
      * @return list<array{name: string, from: string, to: string}>
      */
@@ -710,11 +717,31 @@ final class UpdateRepoAction
         $stripped = preg_replace('/\x1b\[[0-9;]*[A-Za-z]/', '', $output) ?? $output;
         $lines = preg_split("/\r\n|\r|\n/", $stripped) ?: [];
 
+        $sawLockHeader = false;
+        $inLockSection = false;
         $updates = [];
         $seen = [];
 
         foreach ($lines as $line) {
             $trimmed = trim($line);
+
+            if (preg_match('/^Lock file operations:/i', $trimmed)) {
+                $sawLockHeader = true;
+                $inLockSection = true;
+                continue;
+            }
+
+            // The lock block ends as soon as composer writes the lock or starts
+            // installing/upgrading the vendor tree from it.
+            if ($inLockSection && preg_match('/^(Writing lock file|Package operations:|Installing dependencies)/i', $trimmed)) {
+                $inLockSection = false;
+                continue;
+            }
+
+            if (! $inLockSection) {
+                continue;
+            }
+
             if (! preg_match('/^-\s+(?:Upgrading|Downgrading)\s+(\S+)\s+\(([^)]+?)\s+=>\s+([^)]+?)\)/', $trimmed, $m)) {
                 continue;
             }
@@ -724,6 +751,21 @@ final class UpdateRepoAction
             }
             $seen[$name] = true;
             $updates[] = ['name' => $name, 'from' => trim($m[2]), 'to' => trim($m[3])];
+        }
+
+        // Fallback for output without a "Lock file operations" header (very old
+        // or unusual composer): parse every Upgrading/Downgrading line, deduped.
+        if (! $sawLockHeader) {
+            foreach ($lines as $line) {
+                if (! preg_match('/^-\s+(?:Upgrading|Downgrading)\s+(\S+)\s+\(([^)]+?)\s+=>\s+([^)]+?)\)/', trim($line), $m)) {
+                    continue;
+                }
+                if (isset($seen[$m[1]])) {
+                    continue;
+                }
+                $seen[$m[1]] = true;
+                $updates[] = ['name' => $m[1], 'from' => trim($m[2]), 'to' => trim($m[3])];
+            }
         }
 
         return $updates;
@@ -1183,10 +1225,39 @@ final class UpdateRepoAction
     /** @var resource|null */
     private static $transcriptHandle = null;
 
+    /**
+     * Resolve a directory for this repo's logs. Prefer the repo's own
+     * `storage/logs` (Laravel/Craft convention — keeps the log next to the code
+     * that produced it, and is gitignored there, so it never lands in the
+     * update commit). Fall back to a per-user dotdir when the repo isn't
+     * Laravel/Craft shaped so we don't pollute its working tree. The optional
+     * $sub is appended and created.
+     */
+    private static function logDir(string $repoPath, string $sub = ''): ?string
+    {
+        $repoLogs = $repoPath . '/storage/logs';
+        if (is_dir($repoLogs) && is_writable($repoLogs)) {
+            $base = $repoLogs;
+        } else {
+            $home = $_SERVER['HOME'] ?? getenv('HOME') ?: null;
+            if ($home === null) {
+                return null;
+            }
+            $base = $home . '/.pu-update/logs';
+        }
+
+        $dir = $sub === '' ? $base : $base . '/' . $sub;
+        if (! is_dir($dir) && ! @mkdir($dir, 0755, true) && ! is_dir($dir)) {
+            return null;
+        }
+
+        return $dir;
+    }
+
     private static function openTranscript(string $repoPath): ?string
     {
-        $dir = dirname(__DIR__, 2) . '/logs/transcripts';
-        if (! is_dir($dir) && ! @mkdir($dir, 0755, true) && ! is_dir($dir)) {
+        $dir = self::logDir($repoPath, 'transcripts');
+        if ($dir === null) {
             return null;
         }
         $slug = preg_replace('/[^a-z0-9]+/i', '-', basename($repoPath));
@@ -1326,8 +1397,8 @@ final class UpdateRepoAction
 
     private static function writeLog(string $repoPath, string $step, Process $process): ?string
     {
-        $dir = dirname(__DIR__, 2) . '/logs';
-        if (! is_dir($dir) && ! @mkdir($dir, 0755, true) && ! is_dir($dir)) {
+        $dir = self::logDir($repoPath);
+        if ($dir === null) {
             return null;
         }
 
