@@ -190,6 +190,10 @@ class UpdateCommand extends Command
                 : "  <fg=red;options=bold>✗ Prep failed (exit {$prep->getExitCode()}); no test summary detected.</>");
         } elseif (($outcome['testsFailed'] ?? 0) > 0) {
             $this->line("  <fg=red;options=bold>✗ Tests: {$outcome['testsSummary']}</>");
+            foreach ($outcome['failedTests'] as $failed) {
+                $location = $failed['at'] !== null ? " <fg=gray>({$failed['at']})</>" : '';
+                $this->line("    <fg=red>•</> {$failed['name']}{$location}");
+            }
         } else {
             $this->line("  <fg=green>✓ Tests: {$outcome['testsSummary']}</>");
         }

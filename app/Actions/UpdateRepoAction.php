@@ -833,19 +833,66 @@ final class UpdateRepoAction
     }
 
     /**
+     * Extracts the individual failing tests from Pest prep output.
+     *
+     * Pest prints one block per failure:
+     *   FAILED  Tests\Feature\PriceRangeFilterTest > it filters products ...
+     *   Failed asserting that actual size 2 matches expected size 1.
+     *   at tests/Feature/PriceRangeFilterTest.php:77
+     *
+     * The "FAILED" line carries the test class + description; the following
+     * "at <file>:<line>" line carries the location. We pair them so the user
+     * sees exactly which test in which file broke, without opening the log.
+     *
+     * @return list<array{name: string, at: ?string}>
+     */
+    public static function parseFailedTests(string $output): array
+    {
+        $stripped = preg_replace('/\x1b\[[0-9;]*[A-Za-z]/', '', $output) ?? $output;
+        $lines = preg_split("/\r\n|\r|\n/", $stripped) ?: [];
+
+        $failures = [];
+        $current = null;
+
+        foreach ($lines as $line) {
+            $trimmed = trim($line);
+
+            if (preg_match('/^FAILED\s+(.+)$/', $trimmed, $m)) {
+                if ($current !== null) {
+                    $failures[] = $current;
+                }
+                $current = ['name' => trim($m[1]), 'at' => null];
+
+                continue;
+            }
+
+            if ($current !== null && $current['at'] === null && preg_match('/^at\s+(\S+:\d+)$/', $trimmed, $m)) {
+                $current['at'] = $m[1];
+            }
+        }
+
+        if ($current !== null) {
+            $failures[] = $current;
+        }
+
+        return $failures;
+    }
+
+    /**
      * Combines the test-summary and phpstan-error parsers into a single
      * verdict for `composer prep` output. `hasFailures` is true when either
      * parser found failures, or when the process itself exited non-zero
      * (covers prep scripts that swallow phpstan's non-zero exit, and the
      * inverse case where no parseable summary is present at all).
      *
-     * @return array{testsFailed: ?int, testsSummary: ?string, phpstanErrors: ?int, hasFailures: bool}
+     * @return array{testsFailed: ?int, testsSummary: ?string, failedTests: list<array{name: string, at: ?string}>, phpstanErrors: ?int, hasFailures: bool}
      */
     public static function summarizePrep(Process $prep): array
     {
         $combined = $prep->getOutput() . "\n" . $prep->getErrorOutput();
         $stats = self::parseTestSummary($combined);
         $phpstanErrors = self::parsePhpstanErrors($combined);
+        $failedTests = self::parseFailedTests($combined);
 
         $testsFailed = $stats['failed'] ?? null;
         $testsSummary = $stats['summary'] ?? null;
@@ -857,6 +904,7 @@ final class UpdateRepoAction
         return [
             'testsFailed' => $testsFailed,
             'testsSummary' => $testsSummary,
+            'failedTests' => $failedTests,
             'phpstanErrors' => $phpstanErrors,
             'hasFailures' => $hasFailures,
         ];
