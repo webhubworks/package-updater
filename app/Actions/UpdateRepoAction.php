@@ -218,9 +218,7 @@ final class UpdateRepoAction
                 $prepHadFailures = true;
                 $prepLogPath = self::writeLog($repoPath, 'composer-prep', $prep);
                 if ($testsSummary === null) {
-                    $testsSummary = $prep->isSuccessful()
-                        ? 'prep ran but no test summary detected'
-                        : 'prep exited non-zero (no test summary detected)';
+                    $testsSummary = self::prepFailureSummary($outcome['prepStepFailures'], $prep);
                 }
             }
         }
@@ -879,13 +877,153 @@ final class UpdateRepoAction
     }
 
     /**
+     * Detects prep steps that crashed even though the overall `composer prep`
+     * process exited 0. webhub's prep script runs each step and continues past
+     * a failure, printing a marker like:
+     *
+     *   > Running: php -d memory_limit=-1 artisan test --parallel ...
+     *   ... fatal error output ...
+     *     (Command exited with code 1, continuing...)
+     *
+     * Without this, a step that aborts before producing a parseable summary
+     * (e.g. paratest dying on a container binding, phpstan rejecting its
+     * config) is invisible to the test/phpstan parsers and to the exit code —
+     * pu would report "no test summary detected" and treat the run as clean.
+     * We pair each "continuing" marker with the most recent "> Running:"
+     * command and pull a short error excerpt from the lines in between.
+     *
+     * @return list<array{command: string, error: ?string}>
+     */
+    public static function parsePrepStepFailures(string $output): array
+    {
+        $stripped = preg_replace('/\x1b\[[0-9;]*[A-Za-z]/', '', $output) ?? $output;
+        $lines = preg_split("/\r\n|\r|\n/", $stripped) ?: [];
+
+        $failures = [];
+        $currentCommand = null;
+        $block = [];
+
+        foreach ($lines as $line) {
+            $trimmed = trim($line);
+
+            if (preg_match('/^>\s*Running:\s*(.+)$/', $trimmed, $m)) {
+                $currentCommand = trim($m[1]);
+                $block = [];
+
+                continue;
+            }
+
+            if (preg_match('/^\(Command exited with code (\d+), continuing\.\.\.\)$/', $trimmed)) {
+                $failures[] = [
+                    'command' => $currentCommand ?? '(unknown step)',
+                    'error' => self::prepStepError($block),
+                ];
+                $currentCommand = null;
+                $block = [];
+
+                continue;
+            }
+
+            if ($currentCommand !== null && $trimmed !== '') {
+                $block[] = $trimmed;
+            }
+        }
+
+        return $failures;
+    }
+
+    /**
+     * Picks the most informative line from a crashed prep step's output. Symfony
+     * Console renders fatal errors as an "In <File> line N:" header followed by
+     * the message, so we prefer the message after that header; otherwise we fall
+     * back to the first line that reads like an error, then to the first line.
+     *
+     * @param  list<string>  $block
+     */
+    private static function prepStepError(array $block): ?string
+    {
+        foreach ($block as $i => $line) {
+            if (preg_match('/^In\s+\S+\s+line\s+\d+:/i', $line)) {
+                for ($j = $i + 1; $j < count($block); $j++) {
+                    if ($block[$j] !== '') {
+                        return $block[$j];
+                    }
+                }
+            }
+        }
+
+        $signalPatterns = [
+            '/not instantiable/i',
+            '/invalid configuration/i',
+            '/\bexception\b/i',
+            '/\bfatal\b/i',
+            '/\berror\b/i',
+            '/is not defined/i',
+            '/could not/i',
+            '/failed to/i',
+            '/unable to/i',
+        ];
+
+        foreach ($block as $line) {
+            foreach ($signalPatterns as $pattern) {
+                if (preg_match($pattern, $line)) {
+                    return $line;
+                }
+            }
+        }
+
+        return $block[0] ?? null;
+    }
+
+    /**
+     * Builds the one-line summary shown when prep produced no test summary but
+     * still failed — naming the crashed step(s) and their error so the parallel
+     * `update:all` table points straight at the cause instead of a vague "no
+     * test summary detected".
+     *
+     * @param  list<array{command: string, error: ?string}>  $stepFailures
+     */
+    private static function prepFailureSummary(array $stepFailures, Process $prep): string
+    {
+        if ($stepFailures === []) {
+            return $prep->isSuccessful()
+                ? 'prep ran but no test summary detected'
+                : 'prep exited non-zero (no test summary detected)';
+        }
+
+        if (count($stepFailures) === 1) {
+            $f = $stepFailures[0];
+            $cmd = self::shortenCommand($f['command']);
+
+            return $f['error'] !== null
+                ? "prep step failed: {$cmd} — {$f['error']}"
+                : "prep step failed: {$cmd}";
+        }
+
+        $cmds = implode(', ', array_map(
+            fn (array $f): string => self::shortenCommand($f['command']),
+            $stepFailures,
+        ));
+
+        return count($stepFailures) . " prep steps failed: {$cmds}";
+    }
+
+    private static function shortenCommand(string $command, int $max = 60): string
+    {
+        $command = trim($command);
+
+        return strlen($command) <= $max ? $command : rtrim(substr($command, 0, $max - 1)) . '…';
+    }
+
+    /**
      * Combines the test-summary and phpstan-error parsers into a single
      * verdict for `composer prep` output. `hasFailures` is true when either
-     * parser found failures, or when the process itself exited non-zero
-     * (covers prep scripts that swallow phpstan's non-zero exit, and the
-     * inverse case where no parseable summary is present at all).
+     * parser found failures, when a prep step crashed but was swallowed by the
+     * script's "continue on error" behaviour, or when the process itself exited
+     * non-zero (covers prep scripts that swallow phpstan's non-zero exit, and
+     * the inverse case where no parseable summary is present at all).
      *
-     * @return array{testsFailed: ?int, testsSummary: ?string, failedTests: list<array{name: string, at: ?string}>, phpstanErrors: ?int, hasFailures: bool}
+     * @return array{testsFailed: ?int, testsSummary: ?string, failedTests: list<array{name: string, at: ?string}>, phpstanErrors: ?int, prepStepFailures: list<array{command: string, error: ?string}>, hasFailures: bool}
      */
     public static function summarizePrep(Process $prep): array
     {
@@ -893,12 +1031,14 @@ final class UpdateRepoAction
         $stats = self::parseTestSummary($combined);
         $phpstanErrors = self::parsePhpstanErrors($combined);
         $failedTests = self::parseFailedTests($combined);
+        $prepStepFailures = self::parsePrepStepFailures($combined);
 
         $testsFailed = $stats['failed'] ?? null;
         $testsSummary = $stats['summary'] ?? null;
 
         $hasFailures = ($testsFailed !== null && $testsFailed > 0)
             || ($phpstanErrors !== null && $phpstanErrors > 0)
+            || $prepStepFailures !== []
             || ! $prep->isSuccessful();
 
         return [
@@ -906,6 +1046,7 @@ final class UpdateRepoAction
             'testsSummary' => $testsSummary,
             'failedTests' => $failedTests,
             'phpstanErrors' => $phpstanErrors,
+            'prepStepFailures' => $prepStepFailures,
             'hasFailures' => $hasFailures,
         ];
     }

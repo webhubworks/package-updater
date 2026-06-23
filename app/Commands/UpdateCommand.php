@@ -183,11 +183,32 @@ class UpdateCommand extends Command
 
         $outcome = UpdateRepoAction::summarizePrep($prep);
 
+        // Prep steps that crashed but were swallowed by the script's
+        // continue-on-error behaviour. Drop the ones already explained by the
+        // test/phpstan displays below so we don't report the same failure
+        // twice; a crash with no parseable summary (e.g. paratest dying on a
+        // container binding) survives the filter and is surfaced here.
+        $stepFailures = array_values(array_filter(
+            $outcome['prepStepFailures'],
+            function (array $f) use ($outcome): bool {
+                if ($outcome['testsSummary'] !== null && preg_match('/\b(artisan test|pest|phpunit|paratest)\b/i', $f['command'])) {
+                    return false;
+                }
+                if (($outcome['phpstanErrors'] ?? null) !== null && preg_match('/phpstan/i', $f['command'])) {
+                    return false;
+                }
+
+                return true;
+            },
+        ));
+
         $this->newLine();
         if ($outcome['testsSummary'] === null) {
-            $this->line($prep->isSuccessful()
-                ? '  <fg=gray>Prep ran but no test summary detected.</>'
-                : "  <fg=red;options=bold>✗ Prep failed (exit {$prep->getExitCode()}); no test summary detected.</>");
+            if ($stepFailures === []) {
+                $this->line($prep->isSuccessful()
+                    ? '  <fg=gray>Prep ran but no test summary detected.</>'
+                    : "  <fg=red;options=bold>✗ Prep failed (exit {$prep->getExitCode()}); no test summary detected.</>");
+            }
         } elseif (($outcome['testsFailed'] ?? 0) > 0) {
             $this->line("  <fg=red;options=bold>✗ Tests: {$outcome['testsSummary']}</>");
             foreach ($outcome['failedTests'] as $failed) {
@@ -205,6 +226,16 @@ class UpdateCommand extends Command
                 $phpstanErrors,
                 $phpstanErrors === 1 ? '' : 's',
             ));
+        }
+
+        if ($stepFailures !== []) {
+            $this->line('  <fg=red;options=bold>✗ Prep step failed (crashed before producing a summary):</>');
+            foreach ($stepFailures as $failed) {
+                $this->line("    <fg=red>•</> {$failed['command']}");
+                if ($failed['error'] !== null) {
+                    $this->line("      <fg=gray>{$failed['error']}</>");
+                }
+            }
         }
 
         $this->printLogPath($logPath);
