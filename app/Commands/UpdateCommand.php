@@ -117,8 +117,10 @@ class UpdateCommand extends Command
             }
         }
 
+        $audit = null;
         if (! $isCraft) {
-            $this->renderAudit(self::parseAuditSummary($combined));
+            $audit = self::parseAuditSummary($combined);
+            $this->renderAudit($audit);
         }
         $this->printLogPath($logPath);
 
@@ -136,7 +138,7 @@ class UpdateCommand extends Command
 
         // Craft mode skips composer prep — `ddev php craft update` is its own
         // verification layer and the user opted out of running prep on top.
-        if (! $isCraft) {
+        if (! $isCraft && $this->shouldRunPrep($cwd, $audit)) {
             $this->runPrep($cwd, $useDdev);
         }
 
@@ -157,6 +159,31 @@ class UpdateCommand extends Command
 
         return isset($data['require'][FindCraftReposAction::CraftPackage])
             || isset($data['require-dev'][FindCraftReposAction::CraftPackage]);
+    }
+
+    /**
+     * When the update surfaced security advisories, prep (tests/phpstan) is
+     * usually a poor use of time until the vulnerabilities are dealt with, so
+     * we ask before running it instead of barrelling ahead. With no advisories
+     * (or with --yes), prep runs as before. The prompt is skipped entirely when
+     * the repo has no `prep` script — there'd be nothing to run either way.
+     *
+     * @param  array{state: string, vulnerabilityCount: int, abandonedCount: int, packages: list<string>}|null  $audit
+     */
+    private function shouldRunPrep(string $cwd, ?array $audit): bool
+    {
+        if (! UpdateRepoAction::hasComposerScript($cwd, 'prep')) {
+            return true;
+        }
+        if ($audit === null || $audit['vulnerabilityCount'] === 0 || $this->option('yes')) {
+            return true;
+        }
+
+        $this->newLine();
+        return confirm(
+            label: 'Security advisories were found. Still run prep?',
+            default: true,
+        );
     }
 
     /**
