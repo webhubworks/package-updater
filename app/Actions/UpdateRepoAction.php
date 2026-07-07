@@ -10,6 +10,22 @@ final class UpdateRepoAction
     private const BranchCandidates = ['develop', 'dev', 'staging', 'stag', 'stage', 'main', 'master', 'prod', 'live'];
 
     /**
+     * The long-lived branches grouped into precedence tiers, lowest first. A
+     * branch is "higher" than the checked-out one when it lives in a later
+     * tier. Synonyms share a tier (develop/dev, staging/stag/stage, main/master,
+     * prod/live) so a second name at the same level is never mistaken for a
+     * higher branch. Flattened, this must stay in step with BranchCandidates.
+     *
+     * @var list<list<string>>
+     */
+    private const BranchTiers = [
+        ['develop', 'dev'],
+        ['staging', 'stag', 'stage'],
+        ['main', 'master'],
+        ['prod', 'live'],
+    ];
+
+    /**
      * @param  string  $package         The target package whose version we track in the result.
      * @param  callable(string $step, ?string $type, ?string $chunk): void|null  $onProgress
      *         Called with ('step-start', null, label) before each step, and
@@ -128,6 +144,11 @@ final class UpdateRepoAction
             }
 
             return self::fail($repoPath, $branch, 'git pull', $pull);
+        }
+
+        $aheadFailure = self::guardAgainstHigherBranchAhead($repoPath, $branch, $onProgress);
+        if ($aheadFailure !== null) {
+            return $aheadFailure;
         }
 
         $detectedStatus = self::ddevStatus($repoPath);
@@ -1207,6 +1228,127 @@ final class UpdateRepoAction
         }
 
         return RepoUpdateResult::failed($repoPath, $message, $branch, $logPath);
+    }
+
+    /**
+     * After the checked-out lowest branch is up to date with its own origin,
+     * guard against a repo where a HIGHER branch carries commits this branch
+     * doesn't have — e.g. a teammate who commits (or pushes) straight to
+     * main/master. Running the update on a branch that's behind would base the
+     * commit on a stale tree and silently drop whatever already lives upstream,
+     * so we abort and tell the user which branch is ahead and by how much.
+     *
+     * We fetch first so the remote-tracking refs reflect what teammates pushed,
+     * then compare HEAD against both the local and origin ref of each higher
+     * candidate (whichever is further ahead wins). Returns a failed
+     * RepoUpdateResult when a higher branch is ahead, or null when the branch is
+     * current with — or ahead of — every higher branch.
+     *
+     * @param  callable(string, ?string, ?string): void|null  $onProgress
+     */
+    private static function guardAgainstHigherBranchAhead(string $repoPath, string $branch, ?callable $onProgress): ?RepoUpdateResult
+    {
+        $higher = self::higherBranchesFor($branch);
+        if ($higher === []) {
+            return null;
+        }
+
+        // Refresh remote-tracking refs so a branch pushed elsewhere (the common
+        // "dev works on main" case) is visible. Best-effort: an offline or
+        // failed fetch just means we compare against whatever refs we already
+        // have — the earlier `git pull` proves origin is reachable anyway.
+        self::run(['git', 'fetch', 'origin'], $repoPath, 300, $onProgress, 'git fetch origin', stream: false);
+
+        $ahead = [];
+        foreach ($higher as $candidate) {
+            $count = self::commitsAhead($repoPath, $candidate);
+            if ($count > 0) {
+                $ahead[] = "{$candidate} (+{$count})";
+            }
+        }
+
+        if ($ahead === []) {
+            return null;
+        }
+
+        $message = sprintf(
+            "aborted: '%s' is behind a higher branch — %s %s commits '%s' doesn't have. "
+            . "A teammate likely worked on that branch directly. Merge it down into '%s' "
+            . '(or run the update on that branch instead), then re-run.',
+            $branch,
+            implode(', ', $ahead),
+            count($ahead) === 1 ? 'has' : 'have',
+            $branch,
+            $branch,
+        );
+
+        return RepoUpdateResult::failed($repoPath, $message, $branch);
+    }
+
+    /**
+     * Given the checked-out branch, return every candidate branch name in a
+     * strictly higher precedence tier (e.g. for `develop`: staging/stag/stage,
+     * main/master, prod/live). Returns an empty list when the branch is already
+     * the top tier or isn't a known long-lived branch.
+     *
+     * @return list<string>
+     */
+    public static function higherBranchesFor(string $branch): array
+    {
+        $tierIndex = null;
+        foreach (self::BranchTiers as $i => $tier) {
+            if (in_array($branch, $tier, true)) {
+                $tierIndex = $i;
+                break;
+            }
+        }
+
+        if ($tierIndex === null) {
+            return [];
+        }
+
+        $higher = [];
+        foreach (self::BranchTiers as $i => $tier) {
+            if ($i > $tierIndex) {
+                foreach ($tier as $name) {
+                    $higher[] = $name;
+                }
+            }
+        }
+
+        return $higher;
+    }
+
+    /**
+     * Number of commits reachable from the given candidate branch but not from
+     * HEAD — i.e. how far that branch is *ahead* of the checked-out branch. We
+     * check both the local head and the origin remote-tracking ref and take the
+     * larger count, so a branch that's ahead in either place is caught.
+     * Non-existent refs and git failures contribute 0.
+     */
+    private static function commitsAhead(string $repoPath, string $candidate): int
+    {
+        $refs = ["refs/heads/{$candidate}", "refs/remotes/origin/{$candidate}"];
+
+        $max = 0;
+        foreach ($refs as $ref) {
+            $exists = self::run(['git', 'rev-parse', '--verify', '--quiet', $ref], $repoPath, 30, null, '', stream: false);
+            if (! $exists->isSuccessful()) {
+                continue;
+            }
+
+            $revList = self::run(['git', 'rev-list', '--count', "HEAD..{$ref}"], $repoPath, 60, null, '', stream: false);
+            if (! $revList->isSuccessful()) {
+                continue;
+            }
+
+            $count = (int) trim($revList->getOutput());
+            if ($count > $max) {
+                $max = $count;
+            }
+        }
+
+        return $max;
     }
 
     private static function pickBranch(string $repoPath): ?string

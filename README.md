@@ -67,7 +67,11 @@ Universal bulk update — one composer package across every local repo
 that depends on it. Pick a `vendor/name`, pick a target version, pick
 which of the matching repos to run on, pick parallelism, confirm. Each
 repo runs `git pull` → `ddev start` → `ddev composer update` →
-`composer prep` (if defined) → `ddev stop` (optional). Repos already at
+`composer prep` (if defined) → `ddev stop` (optional). After checking out
+the lowest long-lived branch, the run fetches and aborts the repo if a
+higher branch (e.g. `main`/`master` a teammate committed to directly) is
+ahead of it — updating a stale branch would base the commit on the wrong
+tree, so it's left for you to merge down first. Repos already at
 the target version are pre-skipped; with a bare target version, repos
 on a different major are pre-skipped too (prefix the version with `!`
 to force across majors).
