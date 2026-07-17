@@ -183,23 +183,35 @@ local clone) — single source of truth for where to scan. Default:
 
 ### Slack webhook (maintenance runs)
 
-`pu setup` also asks for a Slack incoming-webhook URL. It's stored in
-`~/.config/package-updater/config.json` and used by
-`pu update:craft --maintenance` to post a run summary to the channel the
-webhook writes to. Leave it blank to disable notifications. Set or change
-it non-interactively:
+`pu update:craft --maintenance` posts a run summary to Slack when a
+webhook is configured. To set it up:
+
+1. At <https://api.slack.com/apps>, create a Slack app (or reuse one),
+   enable **Incoming Webhooks**, then **Add New Webhook to Workspace**
+   and pick the channel the summary should post to.
+2. Copy the generated `https://hooks.slack.com/services/...` URL.
+3. Save it - interactively via `pu setup`, or non-interactively:
 
 ```bash
-pu setup --slack-webhook-url="https://hooks.slack.com/services/T…/B…/…"
+pu setup --slack-webhook-url="https://hooks.slack.com/services/T.../B.../..."
 pu setup --no-slack   # persist an empty webhook (notifications off)
 ```
+
+The URL is stored in `~/.config/package-updater/config.json`. Leave it
+blank to disable notifications; once you have answered, `pu setup` won't
+keep asking.
 
 The summary groups the run into three buckets: repos updated, committed
 and pushed; repos updated but not pushed (uncommitted, or committed with
 the push held back by failing tests / PHPStan / a site-crawler issue);
 and failed or skipped repos. It's only sent on `--maintenance` runs, and
-only when a webhook is configured — any send error is logged as a warning
+only when a webhook is configured. Any send error is logged as a warning
 and never fails the run.
+
+The message posts under the Slack app's own name and icon (the app the
+webhook belongs to). Slack ignores per-message sender overrides for
+app-based webhooks, so rename the Slack app itself if you want a
+different display name.
 
 ### Git credentials (HTTPS remotes)
 
