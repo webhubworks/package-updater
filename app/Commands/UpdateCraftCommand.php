@@ -38,12 +38,17 @@ class UpdateCraftCommand extends UpdateAllCommand
         {--no-open : Skip the end-of-run "open in GitKraken" prompt entirely}
         {--composer-sweep=* : fnmatch patterns (e.g. webhubworks/*). After craft update, `composer outdated` is parsed and any installed package matching a pattern is bumped via `composer update -W` + migrate/all + project-config/apply. Repeatable; overrides the stored default.}
         {--no-composer-sweep : Disable the composer sweep step for this run (overrides the stored default).}
+        {--maintenance : Semi-automated dedicated-server run. Implies --yes and defaults to: handle "all", --parallel=3, --stop-ddev, commit + push, crawl every repo, and a craft command with --backup=0. Explicit flags still override each default.}
         {--yes : Skip the confirmation prompt}';
 
     protected $description = 'Run `ddev php craft update <handle>` across local repos containing the given Craft plugin (or Craft itself)';
 
     public function handle(): int
     {
+        if ($this->option('maintenance')) {
+            $this->applyMaintenanceDefaults();
+        }
+
         // Resolve the repos dir BEFORE any other prompt so the first-run
         // setup flow runs before we start asking about plugins.
         $reposDir = $this->resolveReposDir();
@@ -53,6 +58,7 @@ class UpdateCraftCommand extends UpdateAllCommand
 
         if (! is_dir($reposDir)) {
             $this->error("Repos directory not found: {$reposDir}");
+
             return self::FAILURE;
         }
 
@@ -76,6 +82,7 @@ class UpdateCraftCommand extends UpdateAllCommand
                 'craft', 'all' => "No repositories under {$reposDir} require craftcms/cms.",
                 default => "No repositories under {$reposDir} have craft plugin handle \"{$handle}\".",
             });
+
             return self::SUCCESS;
         }
 
@@ -84,10 +91,11 @@ class UpdateCraftCommand extends UpdateAllCommand
 
         if (empty($matches)) {
             warning(sprintf(
-                "No repos remain after --filter-name=%s (started with %d).",
+                'No repos remain after --filter-name=%s (started with %d).',
                 (string) $this->option('filter-name'),
                 $totalFound,
             ));
+
             return self::SUCCESS;
         }
 
@@ -104,6 +112,7 @@ class UpdateCraftCommand extends UpdateAllCommand
                 array_map(fn ($m) => [basename($m['path']), $m['package'], $m['version']], $matches),
             );
             note('Dry run — no changes were made. Note: versions reflect each repo\'s current local composer.lock and may be stale.');
+
             return self::SUCCESS;
         }
 
@@ -114,12 +123,14 @@ class UpdateCraftCommand extends UpdateAllCommand
 
         if (empty($matches)) {
             $this->printSummary($preSkipped, $targetVersion);
+
             return self::SUCCESS;
         }
 
         $matches = $this->resolveRepoSelection($matches);
         if (empty($matches)) {
             info('No repos selected — exiting.');
+
             return self::SUCCESS;
         }
 
@@ -131,7 +142,8 @@ class UpdateCraftCommand extends UpdateAllCommand
         $crawlSet = array_flip($crawlPaths);
 
         $mode = $parallel === 1 ? 'sequentially' : "with {$parallel} workers in parallel";
-        $defaultCommand = "ddev php craft update {$handle} --interactive=0 --with-expired --minor-only --backup=1";
+        $backup = $this->option('maintenance') ? '0' : '1';
+        $defaultCommand = "ddev php craft update {$handle} --interactive=0 --with-expired --minor-only --backup={$backup}";
 
         $craftOption = $this->option('craft-command');
         if (is_string($craftOption) && $craftOption !== '') {
@@ -205,12 +217,12 @@ class UpdateCraftCommand extends UpdateAllCommand
         );
 
         $buildCmd = function (string $repo, string $php, string $binary) use ($packagesByPath, $craftCommandLine, $keepDdevRunning, $crawlSet, $crawlerCommandLine, $commit, $sweepPatterns, $push): array {
-            $cmd = [$php, $binary, 'update:single', $repo, $packagesByPath[$repo], '--craft-command=' . $craftCommandLine];
+            $cmd = [$php, $binary, 'update:single', $repo, $packagesByPath[$repo], '--craft-command='.$craftCommandLine];
             if (! $keepDdevRunning) {
                 $cmd[] = '--stop-ddev';
             }
             if (isset($crawlSet[$repo]) && $crawlerCommandLine !== null) {
-                $cmd[] = '--crawler-command=' . $crawlerCommandLine;
+                $cmd[] = '--crawler-command='.$crawlerCommandLine;
             }
             if ($commit) {
                 $cmd[] = '--commit';
@@ -219,8 +231,9 @@ class UpdateCraftCommand extends UpdateAllCommand
                 $cmd[] = '--push';
             }
             foreach ($sweepPatterns as $pattern) {
-                $cmd[] = '--composer-sweep=' . $pattern;
+                $cmd[] = '--composer-sweep='.$pattern;
             }
+
             return $cmd;
         };
 
@@ -237,6 +250,36 @@ class UpdateCraftCommand extends UpdateAllCommand
         $this->offerOpenPrompt($allResults);
 
         return self::SUCCESS;
+    }
+
+    /**
+     * Pre-seed the input for a semi-automated dedicated-server run so every
+     * interactive prompt resolves to the maintenance defaults. Each value is
+     * only set when the user didn't pass it explicitly, so `--maintenance`
+     * composes with overrides (e.g. `--maintenance --parallel=5 --no-push`).
+     *
+     * Sets:
+     *   - handle argument → "all" (update every Craft package)
+     *   - --yes           → skip every confirmation; commit + push + crawl-all
+     *                       fall out of their `--yes` defaults
+     *   - --parallel=3    → three workers
+     *   - --stop-ddev     → stop each project after a successful update
+     *
+     * The craft command's `--backup=0` is applied where the default command is
+     * built (guarded on --maintenance) so an explicit --craft-command wins.
+     */
+    protected function applyMaintenanceDefaults(): void
+    {
+        if (! $this->argument('handle')) {
+            $this->input->setArgument('handle', 'all');
+        }
+
+        if ($this->option('parallel') === null) {
+            $this->input->setOption('parallel', '3');
+        }
+
+        $this->input->setOption('yes', true);
+        $this->input->setOption('stop-ddev', true);
     }
 
     /**
@@ -325,9 +368,9 @@ class UpdateCraftCommand extends UpdateAllCommand
         info('First-time setup: composer sweep allowlist is not configured.');
         note(
             "After `craft update` finishes, the sweep can run `composer update -W` for any\n"
-            . "package matching one of these fnmatch patterns. Useful for private/Repman\n"
-            . "plugins and transitive libs that Craft's update check doesn't know about.\n"
-            . "Leave blank to skip the sweep — this preference is saved to ~/.config/package-updater/config.json."
+            ."package matching one of these fnmatch patterns. Useful for private/Repman\n"
+            ."plugins and transitive libs that Craft's update check doesn't know about.\n"
+            .'Leave blank to skip the sweep — this preference is saved to ~/.config/package-updater/config.json.'
         );
 
         $value = text(

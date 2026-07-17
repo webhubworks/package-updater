@@ -126,6 +126,15 @@ Craft-aware variant. Same flow, but:
 restricts the match set to repos whose `composer.json` `name` contains
 the substring.
 
+`--maintenance` is a one-flag preset for a dedicated update server. It
+implies `--yes` and pre-seeds every prompt with the semi-automated
+defaults: handle `all` (update every Craft package in every matched
+repo), `--parallel=3`, `--stop-ddev` (stop each project after a
+successful update), commit + push, crawl every repo, and a craft command
+with `--backup=0`. Any explicit flag still wins, so
+`pu update:craft --maintenance --parallel=5 --no-push` overrides just
+those two defaults.
+
 ### `retry`
 
 Re-runs the most recent `update:all` or `update:craft` non-interactively
