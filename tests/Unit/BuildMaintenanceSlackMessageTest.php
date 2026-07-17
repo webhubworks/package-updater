@@ -106,6 +106,13 @@ test('empty buckets render a _none_ placeholder and header/fallback are present'
     expect(blockTexts($payload))->toContain('handle `commerce`');
 });
 
+test('the payload overrides the sender name and icon', function () {
+    $payload = BuildMaintenanceSlackMessage::build([], 'all', '/reps', '2026-07-17 09:00');
+
+    expect($payload['username'])->toBe('Hulk');
+    expect($payload['icon_emoji'])->toBe(':muscle:');
+});
+
 test('long buckets are split across multiple section blocks under the char limit', function () {
     $results = [];
     for ($i = 0; $i < 200; $i++) {

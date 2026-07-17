@@ -24,6 +24,15 @@ final class BuildMaintenanceSlackMessage
     private const MAX_SECTION_CHARS = 2800;
 
     /**
+     * Sender name and icon for the message. Only legacy custom incoming
+     * webhooks honor these overrides; app-based webhooks post under the
+     * Slack app's own name and ignore them.
+     */
+    private const SENDER_NAME = 'Hulk';
+
+    private const SENDER_ICON = ':muscle:';
+
+    /**
      * @param  list<RepoUpdateResult>  $results
      * @return array<string, mixed>
      */
@@ -108,6 +117,8 @@ final class BuildMaintenanceSlackMessage
         array_push($blocks, ...self::sectionBlocks(sprintf('❌ *Failed / other issues* (%d)', count($failed)), $failed));
 
         return [
+            'username' => self::SENDER_NAME,
+            'icon_emoji' => self::SENDER_ICON,
             'text' => sprintf('Craft maintenance summary: %s', $summary),
             'blocks' => $blocks,
         ];
