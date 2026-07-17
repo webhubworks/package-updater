@@ -221,9 +221,13 @@ keep asking.
 The summary groups the run into three buckets: repos updated, committed
 and pushed; repos updated but not pushed (uncommitted, or committed with
 the push held back by failing tests / PHPStan / a site-crawler issue);
-and failed or skipped repos. It's only sent on `--maintenance` runs, and
-only when a webhook is configured. Any send error is logged as a warning
-and never fails the run.
+and failed, skipped, or otherwise-flagged repos. The last bucket also
+catches an otherwise up-to-date repo that still hit a problem during the
+run — a 5xx during the crawl (with the offending URLs listed), a crawler
+crash, or failing tests — so those never disappear into the "already up
+to date" count. It's only sent on `--maintenance` runs, and only when a
+webhook is configured. Any send error is logged as a warning and never
+fails the run.
 
 The message posts under the Slack app's own name and icon (the app the
 webhook belongs to). Slack ignores per-message sender overrides for

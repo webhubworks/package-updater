@@ -23,6 +23,9 @@ final class BuildMaintenanceSlackMessage
     /** Keep each section's text comfortably under Slack's 3000-char limit. */
     private const MAX_SECTION_CHARS = 2800;
 
+    /** Cap the 5xx URLs listed per repo so a flood can't blow past the limit. */
+    private const MAX_CRAWLER_URLS = 5;
+
     /**
      * Sender name and icon for the message. Only legacy custom incoming
      * webhooks honor these overrides; app-based webhooks post under the
@@ -61,13 +64,8 @@ final class BuildMaintenanceSlackMessage
                 continue;
             }
 
-            $hasChanges = $r->committed || $r->hasUncommittedChanges || ! empty($r->packageUpdates);
-            if (! $hasChanges) {
-                $upToDate++;
-
-                continue;
-            }
-
+            // Fully shipped: committed and pushed (the push gate guarantees the
+            // run was error-free, so there is nothing to flag here).
             if ($r->committed && $r->pushed) {
                 $count = count($r->packageUpdates);
                 $pushed[] = sprintf('• *%s* - %d update%s', $name, $count, $count === 1 ? '' : 's');
@@ -75,12 +73,32 @@ final class BuildMaintenanceSlackMessage
                 continue;
             }
 
-            $needsReview[] = sprintf('• *%s* - %s', $name, self::reviewReason($r));
+            $issues = self::issueParts($r);
+            $hasChanges = $r->committed || $r->hasUncommittedChanges || ! empty($r->packageUpdates);
+
+            if ($hasChanges) {
+                $state = $r->committed ? 'committed, not pushed' : 'uncommitted changes';
+                $reason = empty($issues) ? $state : sprintf('%s (%s)', $state, implode(', ', $issues));
+                $needsReview[] = self::withCrawlerUrls(sprintf('• *%s* - %s', $name, $reason), $r);
+
+                continue;
+            }
+
+            // No package changes — but a run can still surface a problem on an
+            // otherwise up-to-date repo (5xx during the crawl, a crawler crash,
+            // failing tests). Those must not vanish into the "up to date" count.
+            if (! empty($issues)) {
+                $failed[] = self::withCrawlerUrls(sprintf('• *%s* - %s', $name, implode(', ', $issues)), $r);
+
+                continue;
+            }
+
+            $upToDate++;
         }
 
         $total = count($results);
         $summary = sprintf(
-            '%d pushed, %d need review, %d failed',
+            '%d pushed, %d need review, %d failed/other',
             count($pushed),
             count($needsReview),
             count($failed),
@@ -125,14 +143,16 @@ final class BuildMaintenanceSlackMessage
     }
 
     /**
-     * Build the human-readable reason a successful repo landed in the
-     * "needs review" bucket: its commit/push state plus any quality-gate
-     * issues that held the push back.
+     * The quality-gate problems a successful run surfaced, as short phrases:
+     * failing tests, PHPStan errors, 5xx responses during the site-crawl, or a
+     * crawler crash. Empty when the run was clean. Used both to annotate the
+     * "updated but not pushed" bucket and to keep an otherwise up-to-date repo
+     * that erupted with a crawler 5xx out of the "already up to date" count.
+     *
+     * @return list<string>
      */
-    private static function reviewReason(RepoUpdateResult $r): string
+    private static function issueParts(RepoUpdateResult $r): array
     {
-        $state = $r->committed ? 'committed, not pushed' : 'uncommitted changes';
-
         $issues = [];
         if (($r->testsFailed ?? 0) > 0) {
             $issues[] = sprintf('%d test%s failed', $r->testsFailed, $r->testsFailed === 1 ? '' : 's');
@@ -147,7 +167,29 @@ final class BuildMaintenanceSlackMessage
             $issues[] = 'site-crawler failed';
         }
 
-        return empty($issues) ? $state : sprintf('%s (%s)', $state, implode(', ', $issues));
+        return $issues;
+    }
+
+    /**
+     * Append the crawler's 5xx URLs (if any) as indented sub-lines so they are
+     * clickable/actionable in Slack, capped so a flood of failures can't blow
+     * past the section char limit.
+     */
+    private static function withCrawlerUrls(string $line, RepoUpdateResult $r): string
+    {
+        $urls = $r->crawlerServerErrorUrls;
+        if (empty($urls)) {
+            return $line;
+        }
+
+        foreach (array_slice($urls, 0, self::MAX_CRAWLER_URLS) as $url) {
+            $line .= "\n    ".$url;
+        }
+        if (count($urls) > self::MAX_CRAWLER_URLS) {
+            $line .= sprintf("\n    +%d more", count($urls) - self::MAX_CRAWLER_URLS);
+        }
+
+        return $line;
     }
 
     /**

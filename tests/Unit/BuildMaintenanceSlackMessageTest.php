@@ -97,10 +97,52 @@ test('a success with no changes counts as up to date, not a bucket entry', funct
     expect($text)->not->toContain('zeta');
 });
 
+test('an up-to-date repo with a 5xx crawl is surfaced, not counted as up to date', function () {
+    $results = [
+        // No package updates, but the crawl returned a 5xx — must not vanish.
+        RepoUpdateResult::success(
+            path: '/reps/gruene-mitte', branch: 'develop', hasUncommittedChanges: false,
+            prepRan: true, crawlerRan: true,
+            crawlerServerErrorUrls: ['https://gruene-mitte.ddev.site'],
+            committed: false, pushed: false,
+        ),
+        // A genuinely clean, up-to-date repo for contrast.
+        RepoUpdateResult::success(
+            path: '/reps/justiz', branch: 'develop', hasUncommittedChanges: false,
+            committed: false, pushed: false,
+        ),
+    ];
+
+    $payload = BuildMaintenanceSlackMessage::build($results, 'all', '/reps', '2026-07-17 09:00');
+    $text = blockTexts($payload);
+
+    expect($text)->toContain('Failed / other issues* (1)');
+    expect($text)->toContain('*gruene-mitte* - 1 URL returned 5xx');
+    expect($text)->toContain('https://gruene-mitte.ddev.site');
+    // Only the genuinely clean repo counts as up to date.
+    expect($text)->toContain('1 already up to date');
+    expect($text)->not->toContain('gruene-mitte* - 0');
+});
+
+test('a crawler crash on an up-to-date repo is surfaced', function () {
+    $results = [
+        RepoUpdateResult::success(
+            path: '/reps/kappa', branch: 'develop', hasUncommittedChanges: false,
+            prepRan: true, crawlerRan: true, crawlerFailed: true,
+            committed: false, pushed: false,
+        ),
+    ];
+
+    $text = blockTexts(BuildMaintenanceSlackMessage::build($results, 'all', '/reps', '2026-07-17 09:00'));
+
+    expect($text)->toContain('Failed / other issues* (1)');
+    expect($text)->toContain('*kappa* - site-crawler failed');
+});
+
 test('empty buckets render a _none_ placeholder and header/fallback are present', function () {
     $payload = BuildMaintenanceSlackMessage::build([], 'commerce', null, '2026-07-17 09:00');
 
-    expect($payload['text'])->toBe('Craft maintenance summary: 0 pushed, 0 need review, 0 failed');
+    expect($payload['text'])->toBe('Craft maintenance summary: 0 pushed, 0 need review, 0 failed/other');
     expect($payload['blocks'][0]['type'])->toBe('header');
     expect(blockTexts($payload))->toContain('_none_');
     expect(blockTexts($payload))->toContain('handle `commerce`');
