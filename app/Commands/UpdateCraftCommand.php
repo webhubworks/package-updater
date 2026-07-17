@@ -2,9 +2,12 @@
 
 namespace App\Commands;
 
+use App\Actions\BuildMaintenanceSlackMessage;
 use App\Actions\FindCraftReposAction;
 use App\Actions\LastRunStore;
 use App\Actions\UpdateRepoAction;
+use App\DataTransferObjects\RepoUpdateResult;
+use App\Support\SlackNotifier;
 use App\Support\UserConfig;
 
 use function Laravel\Prompts\info;
@@ -38,7 +41,7 @@ class UpdateCraftCommand extends UpdateAllCommand
         {--no-open : Skip the end-of-run "open in GitKraken" prompt entirely}
         {--composer-sweep=* : fnmatch patterns (e.g. webhubworks/*). After craft update, `composer outdated` is parsed and any installed package matching a pattern is bumped via `composer update -W` + migrate/all + project-config/apply. Repeatable; overrides the stored default.}
         {--no-composer-sweep : Disable the composer sweep step for this run (overrides the stored default).}
-        {--maintenance : Semi-automated dedicated-server run. Implies --yes and defaults to: handle "all", --parallel=3, --stop-ddev, commit + push, crawl every repo, and a craft command with --backup=0. Explicit flags still override each default.}
+        {--maintenance : Semi-automated dedicated-server run. Implies --yes and defaults to: handle "all", --parallel=3, --stop-ddev, commit + push, crawl every repo, and a craft command with --backup=0. Posts a run summary to Slack when a webhook is configured (see `pu setup`). Explicit flags still override each default.}
         {--yes : Skip the confirmation prompt}';
 
     protected $description = 'Run `ddev php craft update <handle>` across local repos containing the given Craft plugin (or Craft itself)';
@@ -247,9 +250,40 @@ class UpdateCraftCommand extends UpdateAllCommand
         $allResults = array_merge($preSkipped, $results);
         $this->printSummary($allResults, $targetVersion);
         LastRunStore::saveResults('update:craft', array_map(fn ($r) => $r->toArray(), $allResults));
+
+        if ($this->option('maintenance')) {
+            $this->sendMaintenanceSlackSummary($allResults, $handle, $reposDir);
+        }
+
         $this->offerOpenPrompt($allResults);
 
         return self::SUCCESS;
+    }
+
+    /**
+     * Post the run summary to Slack. Only reached under --maintenance. A
+     * missing webhook or a transport error is surfaced as a note/warning but
+     * never fails the command — the update work is already done.
+     *
+     * @param  list<RepoUpdateResult>  $results
+     */
+    protected function sendMaintenanceSlackSummary(array $results, string $handle, string $reposDir): void
+    {
+        $webhook = UserConfig::getSlackWebhookUrl();
+        if ($webhook === null) {
+            note('Slack webhook not configured - skipping notification. Set one with `pu setup --slack-webhook-url=`.');
+
+            return;
+        }
+
+        $payload = BuildMaintenanceSlackMessage::build($results, $handle, $reposDir, date('Y-m-d H:i'));
+
+        try {
+            SlackNotifier::send($webhook, $payload);
+            info('Posted maintenance summary to Slack.');
+        } catch (\Throwable $e) {
+            warning('Could not post the Slack summary: '.$e->getMessage());
+        }
     }
 
     /**

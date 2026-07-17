@@ -131,7 +131,9 @@ implies `--yes` and pre-seeds every prompt with the semi-automated
 defaults: handle `all` (update every Craft package in every matched
 repo), `--parallel=3`, `--stop-ddev` (stop each project after a
 successful update), commit + push, crawl every repo, and a craft command
-with `--backup=0`. Any explicit flag still wins, so
+with `--backup=0`. When a Slack webhook is configured (see
+[Configuration](#slack-webhook-maintenance-runs)) it also posts a run
+summary at the end. Any explicit flag still wins, so
 `pu update:craft --maintenance --parallel=5 --no-push` overrides just
 those two defaults.
 
@@ -178,6 +180,26 @@ the transcript and per-step logs are how you investigate.
 local clone) — single source of truth for where to scan. Default:
 `$HOME/reps`. Per-run override available on every command via
 `--reps-dir=`.
+
+### Slack webhook (maintenance runs)
+
+`pu setup` also asks for a Slack incoming-webhook URL. It's stored in
+`~/.config/package-updater/config.json` and used by
+`pu update:craft --maintenance` to post a run summary to the channel the
+webhook writes to. Leave it blank to disable notifications. Set or change
+it non-interactively:
+
+```bash
+pu setup --slack-webhook-url="https://hooks.slack.com/services/T…/B…/…"
+pu setup --no-slack   # persist an empty webhook (notifications off)
+```
+
+The summary groups the run into three buckets: repos updated, committed
+and pushed; repos updated but not pushed (uncommitted, or committed with
+the push held back by failing tests / PHPStan / a site-crawler issue);
+and failed or skipped repos. It's only sent on `--maintenance` runs, and
+only when a webhook is configured — any send error is logged as a warning
+and never fails the run.
 
 ### Git credentials (HTTPS remotes)
 

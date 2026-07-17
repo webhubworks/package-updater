@@ -110,4 +110,29 @@ final class UserConfig
         ));
         self::save($data);
     }
+
+    /**
+     * True once the user has answered the Slack-webhook prompt at least once
+     * (the saved value may be an empty string ("notifications disabled"),
+     * which we still treat as "configured", so we don't keep re-prompting).
+     */
+    public static function hasSlackWebhookUrl(): bool
+    {
+        return array_key_exists('slack_webhook_url', self::load());
+    }
+
+    public static function getSlackWebhookUrl(): ?string
+    {
+        $value = self::load()['slack_webhook_url'] ?? null;
+
+        return is_string($value) && $value !== '' ? $value : null;
+    }
+
+    /** Pass null or an empty string to disable Slack notifications. */
+    public static function setSlackWebhookUrl(?string $url): void
+    {
+        $data = self::load();
+        $data['slack_webhook_url'] = is_string($url) ? trim($url) : '';
+        self::save($data);
+    }
 }

@@ -14,24 +14,33 @@ class SetupCommand extends Command
     protected $signature = 'setup
         {--repos-dir= : Set the repos directory non-interactively and exit}
         {--composer-sweep=* : Set the composer-sweep allowlist non-interactively (repeatable, fnmatch patterns).}
-        {--no-composer-sweep : Persist an empty sweep allowlist (sweep disabled by default).}';
+        {--no-composer-sweep : Persist an empty sweep allowlist (sweep disabled by default).}
+        {--slack-webhook-url= : Set the Slack incoming-webhook URL non-interactively (used by --maintenance runs to post a summary).}
+        {--no-slack : Persist an empty Slack webhook (notifications disabled).}';
 
-    protected $description = 'Configure package-updater (repos directory + composer-sweep allowlist, stored in ~/.config/package-updater)';
+    protected $description = 'Configure package-updater (repos directory + composer-sweep allowlist + Slack webhook, stored in ~/.config/package-updater)';
 
     public function handle(): int
     {
         $reposDirHandled = $this->handleReposDirNonInteractive();
         if ($reposDirHandled !== null) {
             $this->handleSweepNonInteractive();
+            $slack = $this->handleSlackNonInteractive();
             note('Config file: '.UserConfig::path());
-            return $reposDirHandled;
+
+            return $reposDirHandled === self::SUCCESS && $slack !== self::FAILURE
+                ? self::SUCCESS
+                : self::FAILURE;
         }
 
-        // Pure --composer-sweep / --no-composer-sweep without --repos-dir:
-        // update just the sweep allowlist and exit.
-        if ($this->handleSweepNonInteractive()) {
+        // Pure --composer-sweep / --slack-webhook-url (etc.) without
+        // --repos-dir: update just those settings and exit.
+        $sweepHandled = $this->handleSweepNonInteractive();
+        $slack = $this->handleSlackNonInteractive();
+        if ($sweepHandled || $slack !== null) {
             note('Config file: '.UserConfig::path());
-            return self::SUCCESS;
+
+            return $slack === self::FAILURE ? self::FAILURE : self::SUCCESS;
         }
 
         $currentRepos = UserConfig::getReposDir();
@@ -54,6 +63,7 @@ class SetupCommand extends Command
                 if (! is_dir($resolved)) {
                     return "Not a directory: {$resolved}";
                 }
+
                 return null;
             },
             hint: 'package-updater walks this directory looking for repos that require the chosen composer package.',
@@ -65,6 +75,7 @@ class SetupCommand extends Command
         info("Saved repos directory: {$resolved}");
 
         $this->promptForSweepAllowlist();
+        $this->promptForSlackWebhook();
 
         note('Config file: '.UserConfig::path());
 
@@ -86,6 +97,7 @@ class SetupCommand extends Command
         $resolved = $this->resolvePath($cli);
         if (! is_dir($resolved)) {
             $this->error("Not a directory: {$resolved}");
+
             return self::FAILURE;
         }
         UserConfig::setReposDir($resolved);
@@ -109,12 +121,14 @@ class SetupCommand extends Command
         if (! empty($cli)) {
             UserConfig::setSweepAllowlist($cli);
             info('Saved composer sweep allowlist: '.implode(', ', $cli));
+
             return true;
         }
 
         if ($this->option('no-composer-sweep')) {
             UserConfig::setSweepAllowlist([]);
             info('Saved composer sweep allowlist: (none — sweep disabled by default)');
+
             return true;
         }
 
@@ -132,9 +146,9 @@ class SetupCommand extends Command
 
         note(
             "After `pu update:craft`, the composer sweep can run `composer update -W` for any\n"
-            . "package matching one of these fnmatch patterns (e.g. webhubworks/*). Useful for\n"
-            . "private/Repman plugins and transitive libs that Craft's update check doesn't see.\n"
-            . "Leave blank to skip the sweep by default — override per-run with --composer-sweep="
+            ."package matching one of these fnmatch patterns (e.g. webhubworks/*). Useful for\n"
+            ."private/Repman plugins and transitive libs that Craft's update check doesn't see.\n"
+            .'Leave blank to skip the sweep by default — override per-run with --composer-sweep='
         );
 
         $default = $current !== null ? implode(', ', $current) : '';
@@ -155,6 +169,96 @@ class SetupCommand extends Command
 
         $display = empty($patterns) ? '(none — sweep disabled by default)' : implode(', ', $patterns);
         info("Saved composer sweep allowlist: {$display}");
+    }
+
+    /**
+     * Apply --slack-webhook-url / --no-slack non-interactively when set.
+     * Returns null when neither flag was passed (so the interactive prompt
+     * should run); otherwise the exit code (SUCCESS, or FAILURE on a bad URL).
+     */
+    private function handleSlackNonInteractive(): ?int
+    {
+        $cli = $this->option('slack-webhook-url');
+        if (is_string($cli) && $cli !== '') {
+            $error = self::validateWebhookUrl($cli);
+            if ($error !== null) {
+                $this->error($error);
+
+                return self::FAILURE;
+            }
+            UserConfig::setSlackWebhookUrl(trim($cli));
+            info('Saved Slack webhook: '.self::maskWebhookUrl(trim($cli)));
+
+            return self::SUCCESS;
+        }
+
+        if ($this->option('no-slack')) {
+            UserConfig::setSlackWebhookUrl(null);
+            info('Saved Slack webhook: (none - notifications disabled)');
+
+            return self::SUCCESS;
+        }
+
+        return null;
+    }
+
+    private function promptForSlackWebhook(): void
+    {
+        $current = UserConfig::hasSlackWebhookUrl() ? UserConfig::getSlackWebhookUrl() : null;
+
+        if (UserConfig::hasSlackWebhookUrl()) {
+            $display = $current === null ? '(none - notifications disabled)' : self::maskWebhookUrl($current);
+            info("Current Slack webhook: {$display}");
+        }
+
+        note(
+            "A `pu update:craft --maintenance` run can post a summary to Slack when it\n"
+            ."finishes. Paste an incoming-webhook URL that writes to the channel you want\n"
+            ."(https://hooks.slack.com/services/...). Leave blank to disable notifications.\n"
+            .'override per-run later with --slack-webhook-url= or --no-slack.'
+        );
+
+        $value = trim((string) text(
+            label: 'Slack incoming-webhook URL',
+            placeholder: 'https://hooks.slack.com/services/T.../B.../...',
+            default: $current ?? '',
+            hint: 'Blank = no Slack notifications. Stored in ~/.config/package-updater/config.json.',
+            validate: fn (string $v) => trim($v) === '' ? null : self::validateWebhookUrl($v),
+        ));
+
+        UserConfig::setSlackWebhookUrl($value);
+
+        $display = $value === '' ? '(none - notifications disabled)' : self::maskWebhookUrl($value);
+        info("Saved Slack webhook: {$display}");
+    }
+
+    /** Returns an error string when the URL isn't a plausible Slack webhook, else null. */
+    private static function validateWebhookUrl(string $url): ?string
+    {
+        $url = trim($url);
+        if (! filter_var($url, FILTER_VALIDATE_URL)) {
+            return 'Enter a valid URL.';
+        }
+        $parts = parse_url($url);
+        if (($parts['scheme'] ?? '') !== 'https') {
+            return 'The webhook URL must use https.';
+        }
+        if (($parts['host'] ?? '') !== 'hooks.slack.com') {
+            return 'Expected a Slack incoming webhook on hooks.slack.com.';
+        }
+
+        return null;
+    }
+
+    /** Mask the secret token portion of a webhook so it can be echoed safely. */
+    private static function maskWebhookUrl(string $url): string
+    {
+        $parts = parse_url($url);
+        $scheme = $parts['scheme'] ?? 'https';
+        $host = $parts['host'] ?? '';
+        $tail = substr($url, -4);
+
+        return "{$scheme}://{$host}/…{$tail}";
     }
 
     private function resolvePath(string $path): string
