@@ -26,23 +26,23 @@ final class UpdateRepoAction
     ];
 
     /**
-     * @param  string  $package         The target package whose version we track in the result.
+     * @param  string  $package  The target package whose version we track in the result.
      * @param  callable(string $step, ?string $type, ?string $chunk): void|null  $onProgress
-     *         Called with ('step-start', null, label) before each step, and
-     *         (label, 'out'|'err', chunk) for each output chunk.
+     *                                                                                        Called with ('step-start', null, label) before each step, and
+     *                                                                                        (label, 'out'|'err', chunk) for each output chunk.
      * @param  bool  $withAllDependencies  Pass -W to composer.
      * @param  string|null  $updatePackage  The package composer should actually `update`
      *                                      (defaults to $package). Override with a parent
      *                                      package when its constraint blocks $package from
      *                                      reaching the desired version.
      * @param  string|null  $craftCommandLine  When set, the update step runs this shell command
-     *                                          (e.g. `ddev craft update commerce --interactive=0`)
-     *                                          instead of `ddev composer update`. $package is still
-     *                                          used to track the locked version before/after.
+     *                                         (e.g. `ddev craft update commerce --interactive=0`)
+     *                                         instead of `ddev composer update`. $package is still
+     *                                         used to track the locked version before/after.
      * @param  string|null  $crawlerCommandLine  When non-null, runs this shell command from the
-     *                                            repo after `composer prep`. A crawler failure
-     *                                            does NOT mark the repo as failed; it surfaces
-     *                                            via the crawlerFailed/crawlerLogPath fields.
+     *                                           repo after `composer prep`. A crawler failure
+     *                                           does NOT mark the repo as failed; it surfaces
+     *                                           via the crawlerFailed/crawlerLogPath fields.
      * @param  bool  $commit  When true (and craft prints a "Performing N updates:" list, or in
      *                        remove mode), the action stages everything and commits with a title
      *                        that reflects what happened ("Package updates" / "Remove <pkg>").
@@ -51,12 +51,12 @@ final class UpdateRepoAction
      *                      PHPStan errors, no site-crawler failure or 5xx responses). Has no effect
      *                      unless $commit is true.
      * @param  list<array{name: string, dev: bool}>|null  $removeSpec  When set, the action runs
-     *                                                                  `composer remove [--dev] <pkgs>`
-     *                                                                  (grouped by the dev flag) instead
-     *                                                                  of `composer update`. The commit
-     *                                                                  message becomes "Remove <pkg>" or
-     *                                                                  "Remove N packages" with a body
-     *                                                                  listing the removed names.
+     *                                                                 `composer remove [--dev] <pkgs>`
+     *                                                                 (grouped by the dev flag) instead
+     *                                                                 of `composer update`. The commit
+     *                                                                 message becomes "Remove <pkg>" or
+     *                                                                 "Remove N packages" with a body
+     *                                                                 listing the removed names.
      * @param  list<string>|null  $sweepPatterns  Optional fnmatch patterns (e.g. `webhubworks/*`).
      *                                            Only honoured for craft-mode runs. After craft
      *                                            update, `composer outdated --format=json` is parsed
@@ -64,6 +64,10 @@ final class UpdateRepoAction
      *                                            pattern gets `composer update <pkg> -W`. If any
      *                                            package was bumped, migrate/all + project-config/apply
      *                                            re-run so DB and config catch up.
+     * @param  bool  $resetIfDirty  When true, a repo with uncommitted changes is hard-reset
+     *                              (`git reset --hard HEAD` + `git clean -fd`) instead of being
+     *                              skipped, then updated from the clean tree. Intended for the
+     *                              dedicated maintenance server where local edits are never real work.
      */
     public static function update(
         string $repoPath,
@@ -78,10 +82,11 @@ final class UpdateRepoAction
         ?array $removeSpec = null,
         ?array $sweepPatterns = null,
         bool $push = false,
+        bool $resetIfDirty = false,
     ): RepoUpdateResult {
         $transcriptPath = self::openTranscript($repoPath);
         try {
-            $result = self::doUpdate($repoPath, $package, $onProgress, $withAllDependencies, $updatePackage, $keepDdevRunning, $craftCommandLine, $crawlerCommandLine, $commit, $removeSpec, $sweepPatterns, $push);
+            $result = self::doUpdate($repoPath, $package, $onProgress, $withAllDependencies, $updatePackage, $keepDdevRunning, $craftCommandLine, $crawlerCommandLine, $commit, $removeSpec, $sweepPatterns, $push, $resetIfDirty);
         } finally {
             self::closeTranscript();
         }
@@ -93,6 +98,7 @@ final class UpdateRepoAction
     {
         $data = $result->toArray();
         $data['transcriptPath'] = $path;
+
         return RepoUpdateResult::fromArray($data);
     }
 
@@ -109,6 +115,7 @@ final class UpdateRepoAction
         ?array $removeSpec = null,
         ?array $sweepPatterns = null,
         bool $push = false,
+        bool $resetIfDirty = false,
     ): RepoUpdateResult {
         $updatePackage = $updatePackage ?? $package;
 
@@ -123,8 +130,17 @@ final class UpdateRepoAction
             return self::fail($repoPath, null, 'git status', $status);
         }
 
+        $wasReset = false;
         if (trim($status->getOutput()) !== '') {
-            return RepoUpdateResult::skipped($repoPath, 'uncommitted changes', hasUncommittedChanges: true);
+            if (! $resetIfDirty) {
+                return RepoUpdateResult::skipped($repoPath, 'uncommitted changes', hasUncommittedChanges: true);
+            }
+
+            $reset = self::resetDirtyRepo($repoPath, $onProgress);
+            if ($reset instanceof RepoUpdateResult) {
+                return $reset;
+            }
+            $wasReset = true;
         }
 
         $branch = self::pickBranch($repoPath);
@@ -160,7 +176,7 @@ final class UpdateRepoAction
             }
         } else {
             if ($onProgress !== null) {
-                $onProgress('step-start', null, 'ddev status: ' . ($detectedStatus ?? 'unknown'));
+                $onProgress('step-start', null, 'ddev status: '.($detectedStatus ?? 'unknown'));
             }
             $start = self::runDdevStart($repoPath, $onProgress);
             if (! $start->isSuccessful()) {
@@ -170,11 +186,18 @@ final class UpdateRepoAction
 
         if ($craftCommandLine !== null) {
             // Always sync deps / migrations / project config before our craft
-            // update layers more changes on top.
+            // update layers more changes on top. After a dirty-repo reset we
+            // force the project-config apply so the DB config is pulled back in
+            // line with the freshly-reset YAML even when Craft thinks they're
+            // already in sync.
+            $applyCmd = ['ddev', 'php', 'craft', 'project-config/apply'];
+            if ($wasReset) {
+                $applyCmd[] = '--force';
+            }
             $syncSteps = [
                 [['ddev', 'composer', 'install'], 'ddev composer install'],
                 [['ddev', 'php', 'craft', 'migrate/all'], 'ddev php craft migrate/all'],
-                [['ddev', 'php', 'craft', 'project-config/apply'], 'ddev php craft project-config/apply'],
+                [$applyCmd, 'ddev php craft project-config/apply'.($wasReset ? ' --force' : '')],
             ];
             foreach ($syncSteps as [$args, $label]) {
                 $proc = self::run($args, $repoPath, 1800, $onProgress, $label);
@@ -253,7 +276,7 @@ final class UpdateRepoAction
             $crawlerRan = true;
             $crawler = self::run($crawlerCommandLine, $repoPath, 3600, $onProgress, $crawlerCommandLine);
 
-            $crawlerCombined = $crawler->getOutput() . "\n" . $crawler->getErrorOutput();
+            $crawlerCombined = $crawler->getOutput()."\n".$crawler->getErrorOutput();
             $crawlerServerErrorUrls = self::parseCrawlerServerErrors($crawlerCombined);
 
             if (! $crawler->isSuccessful()) {
@@ -326,6 +349,50 @@ final class UpdateRepoAction
     }
 
     /**
+     * Hard-reset a dirty working tree so the update can start from a clean
+     * baseline. Only reached under maintenance mode (resetIfDirty), where the
+     * host runs updates exclusively and any local change is a leftover from a
+     * previous run rather than real work.
+     *
+     * Runs `git reset --hard HEAD` (revert tracked edits) then `git clean -fd`
+     * (drop untracked files/dirs — gitignored paths like vendor/, .env and
+     * storage/ are left untouched). Dependencies and project config are brought
+     * back in line afterwards by the normal craft sync steps (`ddev composer
+     * install` + `project-config/apply --force`), which run once ddev is up.
+     *
+     * Returns null on success, or a failed RepoUpdateResult when git fails or
+     * the tree is somehow still dirty afterwards.
+     *
+     * @param  callable(string, ?string, ?string): void|null  $onProgress
+     */
+    private static function resetDirtyRepo(string $repoPath, ?callable $onProgress): ?RepoUpdateResult
+    {
+        if ($onProgress !== null) {
+            $onProgress('step-start', null, 'uncommitted changes — resetting (git reset --hard + git clean -fd)');
+        }
+
+        $reset = self::run(['git', 'reset', '--hard', 'HEAD'], $repoPath, 120, $onProgress, 'git reset --hard HEAD');
+        if (! $reset->isSuccessful()) {
+            return self::fail($repoPath, null, 'git reset --hard HEAD', $reset);
+        }
+
+        $clean = self::run(['git', 'clean', '-fd'], $repoPath, 120, $onProgress, 'git clean -fd');
+        if (! $clean->isSuccessful()) {
+            return self::fail($repoPath, null, 'git clean -fd', $clean);
+        }
+
+        $status = self::run(['git', 'status', '--porcelain'], $repoPath, 60, null, '', stream: false);
+        if (! $status->isSuccessful() || trim($status->getOutput()) !== '') {
+            return RepoUpdateResult::failed(
+                $repoPath,
+                'reset failed: working tree still dirty after git reset --hard + git clean -fd',
+            );
+        }
+
+        return null;
+    }
+
+    /**
      * Run the composer/craft update step. Returns the parsed package-updates
      * list on success, or a failure RepoUpdateResult to short-circuit doUpdate.
      *
@@ -349,7 +416,7 @@ final class UpdateRepoAction
             if ($withAllDependencies) {
                 $updateCommand[] = '-W';
             }
-            $updateLabel = 'ddev composer update ' . $updatePackage . ($withAllDependencies ? ' -W' : '');
+            $updateLabel = 'ddev composer update '.$updatePackage.($withAllDependencies ? ' -W' : '');
             $failStep = 'ddev composer update';
         }
 
@@ -358,7 +425,7 @@ final class UpdateRepoAction
             return self::fail($repoPath, $branch, $failStep, $update);
         }
 
-        $combined = $update->getOutput() . "\n" . $update->getErrorOutput();
+        $combined = $update->getOutput()."\n".$update->getErrorOutput();
 
         return $craftCommandLine !== null
             ? self::parseCraftUpdates($combined)
@@ -388,7 +455,7 @@ final class UpdateRepoAction
             foreach ($names as $n) {
                 $cmd[] = $n;
             }
-            $label = 'ddev composer remove' . ($dev ? ' --dev' : '') . ' ' . implode(' ', $names);
+            $label = 'ddev composer remove'.($dev ? ' --dev' : '').' '.implode(' ', $names);
             $proc = self::run($cmd, $repoPath, 1800, $onProgress, $label);
             if (! $proc->isSuccessful()) {
                 return self::fail($repoPath, $branch, 'ddev composer remove', $proc);
@@ -441,7 +508,7 @@ final class UpdateRepoAction
             $repoPath,
             1800,
             $onProgress,
-            'ddev composer update -W (sweep) ' . implode(' ', $names),
+            'ddev composer update -W (sweep) '.implode(' ', $names),
         );
         if (! $update->isSuccessful()) {
             return self::fail($repoPath, $branch, 'ddev composer update (sweep)', $update);
@@ -608,7 +675,7 @@ final class UpdateRepoAction
             ? "Remove {$names[0]}"
             : sprintf('Remove %d packages', count($names));
         $body = implode("\n", array_map(
-            fn (array $p) => '- ' . $p['name'] . ($p['dev'] ? ' (dev)' : ''),
+            fn (array $p) => '- '.$p['name'].($p['dev'] ? ' (dev)' : ''),
             $removeSpec,
         ));
 
@@ -687,6 +754,7 @@ final class UpdateRepoAction
             // word ("Performing one update:") — accept either.
             if (preg_match('/^Performing\s+\S+\s+updates?:\s*$/i', $trimmed)) {
                 $inBlock = true;
+
                 continue;
             }
             if (! $inBlock) {
@@ -697,11 +765,13 @@ final class UpdateRepoAction
                 if (! empty($updates)) {
                     break;
                 }
+
                 continue;
             }
 
             if (preg_match('/^-\s+(\S+)\s+(\S+)\s+=>\s+(\S+)\s*$/', $trimmed, $m)) {
                 $updates[] = ['name' => $m[1], 'from' => $m[2], 'to' => $m[3]];
+
                 continue;
             }
 
@@ -747,6 +817,7 @@ final class UpdateRepoAction
             if (preg_match('/^Lock file operations:/i', $trimmed)) {
                 $sawLockHeader = true;
                 $inLockSection = true;
+
                 continue;
             }
 
@@ -754,6 +825,7 @@ final class UpdateRepoAction
             // installing/upgrading the vendor tree from it.
             if ($inLockSection && preg_match('/^(Writing lock file|Package operations:|Installing dependencies)/i', $trimmed)) {
                 $inLockSection = false;
+
                 continue;
             }
 
@@ -792,7 +864,7 @@ final class UpdateRepoAction
 
     public static function hasComposerScript(string $repoPath, string $scriptName): bool
     {
-        $composerJson = $repoPath . '/composer.json';
+        $composerJson = $repoPath.'/composer.json';
         if (! is_file($composerJson)) {
             return false;
         }
@@ -1026,14 +1098,14 @@ final class UpdateRepoAction
             $stepFailures,
         ));
 
-        return count($stepFailures) . " prep steps failed: {$cmds}";
+        return count($stepFailures)." prep steps failed: {$cmds}";
     }
 
     private static function shortenCommand(string $command, int $max = 60): string
     {
         $command = trim($command);
 
-        return strlen($command) <= $max ? $command : rtrim(substr($command, 0, $max - 1)) . '…';
+        return strlen($command) <= $max ? $command : rtrim(substr($command, 0, $max - 1)).'…';
     }
 
     /**
@@ -1048,7 +1120,7 @@ final class UpdateRepoAction
      */
     public static function summarizePrep(Process $prep): array
     {
-        $combined = $prep->getOutput() . "\n" . $prep->getErrorOutput();
+        $combined = $prep->getOutput()."\n".$prep->getErrorOutput();
         $stats = self::parseTestSummary($combined);
         $phpstanErrors = self::parsePhpstanErrors($combined);
         $failedTests = self::parseFailedTests($combined);
@@ -1089,6 +1161,7 @@ final class UpdateRepoAction
         if (preg_match('/\[ERROR\]\s+Found\s+(\d+)\s+errors?\b/i', $stripped, $m)) {
             return (int) $m[1];
         }
+
         return null;
     }
 
@@ -1113,6 +1186,7 @@ final class UpdateRepoAction
 
             if (preg_match('/^Failed requests:\s*$/i', $trimmed)) {
                 $inFailedTable = true;
+
                 continue;
             }
             if (! $inFailedTable) {
@@ -1142,7 +1216,7 @@ final class UpdateRepoAction
 
     private static function lockedVersion(string $repoPath, string $package): ?string
     {
-        $lock = $repoPath . '/composer.lock';
+        $lock = $repoPath.'/composer.lock';
         if (! is_file($lock)) {
             return null;
         }
@@ -1182,7 +1256,7 @@ final class UpdateRepoAction
     private static function isMissingRemoteRef(Process $process): bool
     {
         return stripos(
-            $process->getOutput() . "\n" . $process->getErrorOutput(),
+            $process->getOutput()."\n".$process->getErrorOutput(),
             "couldn't find remote ref",
         ) !== false;
     }
@@ -1220,7 +1294,7 @@ final class UpdateRepoAction
 
         $message = "git pull failed: branch '{$branch}' no longer exists on origin (likely renamed or deleted).";
         $message .= $branches !== []
-            ? ' Live branches: ' . implode(', ', $branches) . '. Check one out (`git checkout <branch>`) and re-run.'
+            ? ' Live branches: '.implode(', ', $branches).'. Check one out (`git checkout <branch>`) and re-run.'
             : ' Run `git fetch --prune` and check out a branch that still exists, then re-run.';
 
         if ($logPath !== null) {
@@ -1273,8 +1347,8 @@ final class UpdateRepoAction
 
         $message = sprintf(
             "aborted: '%s' is behind a higher branch — %s %s commits '%s' doesn't have. "
-            . "A teammate likely worked on that branch directly. Merge it down into '%s' "
-            . '(or run the update on that branch instead), then re-run.',
+            ."A teammate likely worked on that branch directly. Merge it down into '%s' "
+            .'(or run the update on that branch instead), then re-run.',
             $branch,
             implode(', ', $ahead),
             count($ahead) === 1 ? 'has' : 'have',
@@ -1432,7 +1506,7 @@ final class UpdateRepoAction
             $process->run();
             self::transcriptAppend($process->getOutput());
             if ($process->getErrorOutput() !== '') {
-                self::transcriptAppend("[stderr] " . $process->getErrorOutput());
+                self::transcriptAppend('[stderr] '.$process->getErrorOutput());
             }
         }
 
@@ -1506,7 +1580,7 @@ final class UpdateRepoAction
      */
     private static function withDdevStartLock(?callable $onProgress, callable $fn): Process
     {
-        $lockPath = sys_get_temp_dir() . '/package-updater-ddev-start.lock';
+        $lockPath = sys_get_temp_dir().'/package-updater-ddev-start.lock';
         $handle = @fopen($lockPath, 'c');
         if ($handle === false) {
             return $fn();
@@ -1519,6 +1593,7 @@ final class UpdateRepoAction
                 }
                 @flock($handle, LOCK_EX);
             }
+
             return $fn();
         } finally {
             @flock($handle, LOCK_UN);
@@ -1534,7 +1609,7 @@ final class UpdateRepoAction
      */
     private static function isTransientDdevStartFailure(Process $process): bool
     {
-        $combined = $process->getOutput() . "\n" . $process->getErrorOutput();
+        $combined = $process->getOutput()."\n".$process->getErrorOutput();
 
         $signatures = [
             'port is already allocated',
@@ -1566,7 +1641,7 @@ final class UpdateRepoAction
      */
     private static function logDir(string $repoPath, string $sub = ''): ?string
     {
-        $repoLogs = $repoPath . '/storage/logs';
+        $repoLogs = $repoPath.'/storage/logs';
         if (is_dir($repoLogs) && is_writable($repoLogs)) {
             $base = $repoLogs;
         } else {
@@ -1574,10 +1649,10 @@ final class UpdateRepoAction
             if ($home === null) {
                 return null;
             }
-            $base = $home . '/.pu-update/logs';
+            $base = $home.'/.pu-update/logs';
         }
 
-        $dir = $sub === '' ? $base : $base . '/' . $sub;
+        $dir = $sub === '' ? $base : $base.'/'.$sub;
         if (! is_dir($dir) && ! @mkdir($dir, 0755, true) && ! is_dir($dir)) {
             return null;
         }
@@ -1592,13 +1667,14 @@ final class UpdateRepoAction
             return null;
         }
         $slug = preg_replace('/[^a-z0-9]+/i', '-', basename($repoPath));
-        $file = $dir . '/' . trim((string) $slug, '-') . '-' . date('Ymd-His') . '.log';
+        $file = $dir.'/'.trim((string) $slug, '-').'-'.date('Ymd-His').'.log';
         $handle = @fopen($file, 'w');
         if ($handle === false) {
             return null;
         }
         self::$transcriptHandle = $handle;
-        @fwrite($handle, "# Repo: {$repoPath}\n# Started: " . date('c') . "\n");
+        @fwrite($handle, "# Repo: {$repoPath}\n# Started: ".date('c')."\n");
+
         return $file;
     }
 
@@ -1607,7 +1683,7 @@ final class UpdateRepoAction
         if (self::$transcriptHandle === null) {
             return;
         }
-        @fwrite(self::$transcriptHandle, "\n# Finished: " . date('c') . "\n");
+        @fwrite(self::$transcriptHandle, "\n# Finished: ".date('c')."\n");
         @fclose(self::$transcriptHandle);
         self::$transcriptHandle = null;
     }
@@ -1637,7 +1713,7 @@ final class UpdateRepoAction
         if (self::$transcriptHandle === null) {
             return;
         }
-        @fwrite(self::$transcriptHandle, "\n(exit: " . ($code ?? '?') . ")\n");
+        @fwrite(self::$transcriptHandle, "\n(exit: ".($code ?? '?').")\n");
     }
 
     private static function fail(string $repoPath, ?string $branch, string $step, Process $process): RepoUpdateResult
@@ -1650,7 +1726,7 @@ final class UpdateRepoAction
         // remains in the log file for anyone who wants the gory details.
         $message = $hint !== null
             ? "{$step} failed: {$hint}"
-            : "{$step} failed: " . self::extractError($process);
+            : "{$step} failed: ".self::extractError($process);
 
         if ($logPath !== null) {
             $message .= " (log: {$logPath})";
@@ -1661,56 +1737,40 @@ final class UpdateRepoAction
 
     private static function hintFor(Process $process): ?string
     {
-        $combined = $process->getOutput() . "\n" . $process->getErrorOutput();
+        $combined = $process->getOutput()."\n".$process->getErrorOutput();
 
         $hints = [
-            'needs to run with administrative privileges'
-                => 'ddev needs sudo to add a hostname to /etc/hosts. Run `ddev start` manually in this repo once to enter your password, then re-run `package-updater retry`.',
+            'needs to run with administrative privileges' => 'ddev needs sudo to add a hostname to /etc/hosts. Run `ddev start` manually in this repo once to enter your password, then re-run `package-updater retry`.',
 
-            'may need to enter your password for sudo'
-                => 'ddev needs sudo to add a hostname to /etc/hosts. Run `ddev start` manually in this repo once to enter your password, then re-run `package-updater retry`.',
+            'may need to enter your password for sudo' => 'ddev needs sudo to add a hostname to /etc/hosts. Run `ddev start` manually in this repo once to enter your password, then re-run `package-updater retry`.',
 
-            'configured database type does not match the current actual database'
-                => 'database type mismatch — run `ddev delete --omit-snapshot` then `ddev restart` in this repo',
+            'configured database type does not match the current actual database' => 'database type mismatch — run `ddev delete --omit-snapshot` then `ddev restart` in this repo',
 
-            'permission denied (publickey)'
-                => 'SSH auth failed — load the right key into the host agent (`ssh-add ~/.ssh/<key>`); composer-side issues need `ddev auth ssh`',
+            'permission denied (publickey)' => 'SSH auth failed — load the right key into the host agent (`ssh-add ~/.ssh/<key>`); composer-side issues need `ddev auth ssh`',
 
-            'could not read username'
-                => 'git auth failed on an HTTPS remote — cache credentials (`git credential approve`) or switch the remote to SSH (`git remote set-url origin git@<host>:<path>.git`)',
+            'could not read username' => 'git auth failed on an HTTPS remote — cache credentials (`git credential approve`) or switch the remote to SSH (`git remote set-url origin git@<host>:<path>.git`)',
 
-            'authentication failed'
-                => 'git auth failed on an HTTPS remote — cache credentials (`git credential approve`) or switch the remote to SSH (`git remote set-url origin git@<host>:<path>.git`)',
+            'authentication failed' => 'git auth failed on an HTTPS remote — cache credentials (`git credential approve`) or switch the remote to SSH (`git remote set-url origin git@<host>:<path>.git`)',
 
-            'user cancelled dialog'
-                => 'git auth failed on an HTTPS remote — cache credentials (`git credential approve`) or switch the remote to SSH (`git remote set-url origin git@<host>:<path>.git`)',
+            'user cancelled dialog' => 'git auth failed on an HTTPS remote — cache credentials (`git credential approve`) or switch the remote to SSH (`git remote set-url origin git@<host>:<path>.git`)',
 
-            'terminal prompts disabled'
-                => 'git needs credentials it cannot get non-interactively — cache them (`git credential approve`) or switch the remote to SSH (`git remote set-url origin git@<host>:<path>.git`)',
+            'terminal prompts disabled' => 'git needs credentials it cannot get non-interactively — cache them (`git credential approve`) or switch the remote to SSH (`git remote set-url origin git@<host>:<path>.git`)',
 
-            'cannot connect to the docker daemon'
-                => 'Docker is not running — start Docker Desktop',
+            'cannot connect to the docker daemon' => 'Docker is not running — start Docker Desktop',
 
-            'is the docker daemon running'
-                => 'Docker is not running — start Docker Desktop',
+            'is the docker daemon running' => 'Docker is not running — start Docker Desktop',
 
-            'port is already allocated'
-                => 'port conflict — run `ddev poweroff` (frees all ddev-bound ports) and retry, or use `lsof -i :<port>` to find the offender',
+            'port is already allocated' => 'port conflict — run `ddev poweroff` (frees all ddev-bound ports) and retry, or use `lsof -i :<port>` to find the offender',
 
-            'bind: address already in use'
-                => 'port conflict — run `ddev poweroff` and retry, or `lsof -i :<port>` to find the process holding it',
+            'bind: address already in use' => 'port conflict — run `ddev poweroff` and retry, or `lsof -i :<port>` to find the process holding it',
 
-            'your local changes to the following files would be overwritten by merge'
-                => 'local changes block git pull — should have been caught by the dirty-check; if not, commit or stash manually',
+            'your local changes to the following files would be overwritten by merge' => 'local changes block git pull — should have been caught by the dirty-check; if not, commit or stash manually',
 
-            "couldn't find remote ref"
-                => 'target branch no longer exists on origin (likely renamed/deleted) — `git fetch --prune`, then check out a branch that still exists',
+            "couldn't find remote ref" => 'target branch no longer exists on origin (likely renamed/deleted) — `git fetch --prune`, then check out a branch that still exists',
 
-            'refusing to merge unrelated histories'
-                => 'branch divergence — needs manual `git pull --allow-unrelated-histories` or a rebase',
+            'refusing to merge unrelated histories' => 'branch divergence — needs manual `git pull --allow-unrelated-histories` or a rebase',
 
-            'your requirements could not be resolved to an installable set of packages'
-                => 'composer constraint conflict — try `--update-package=<parent>` to bump a parent constraint, or inspect with `composer why-not <pkg> <version>`',
+            'your requirements could not be resolved to an installable set of packages' => 'composer constraint conflict — try `--update-package=<parent>` to bump a parent constraint, or inspect with `composer why-not <pkg> <version>`',
         ];
 
         foreach ($hints as $needle => $hint) {
@@ -1733,14 +1793,14 @@ final class UpdateRepoAction
             return null;
         }
 
-        $slug = preg_replace('/[^a-z0-9]+/i', '-', basename($repoPath) . '-' . $step);
-        $file = $dir . '/' . trim((string) $slug, '-') . '-' . date('Ymd-His') . '.log';
+        $slug = preg_replace('/[^a-z0-9]+/i', '-', basename($repoPath).'-'.$step);
+        $file = $dir.'/'.trim((string) $slug, '-').'-'.date('Ymd-His').'.log';
 
-        $contents = '# Command: ' . $process->getCommandLine() . "\n"
-            . "# CWD: {$repoPath}\n"
-            . '# Exit: ' . $process->getExitCode() . "\n"
-            . "\n--- STDOUT ---\n" . $process->getOutput()
-            . "\n--- STDERR ---\n" . $process->getErrorOutput();
+        $contents = '# Command: '.$process->getCommandLine()."\n"
+            ."# CWD: {$repoPath}\n"
+            .'# Exit: '.$process->getExitCode()."\n"
+            ."\n--- STDOUT ---\n".$process->getOutput()
+            ."\n--- STDERR ---\n".$process->getErrorOutput();
 
         return @file_put_contents($file, $contents) === false ? null : $file;
     }
@@ -1749,7 +1809,7 @@ final class UpdateRepoAction
     {
         $combined = trim($process->getErrorOutput()) ?: trim($process->getOutput());
         if ($combined === '') {
-            return 'no output (exit ' . $process->getExitCode() . ')';
+            return 'no output (exit '.$process->getExitCode().')';
         }
 
         $lines = array_values(array_filter(
@@ -1772,12 +1832,14 @@ final class UpdateRepoAction
             foreach ($signalPatterns as $pattern) {
                 if (preg_match($pattern, $line)) {
                     $end = min(count($lines) - 1, $i + 2);
+
                     return implode(' | ', array_slice($lines, $i, $end - $i + 1));
                 }
             }
         }
 
         $tail = array_slice($lines, -3);
+
         return implode(' | ', $tail);
     }
 }

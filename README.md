@@ -137,6 +137,15 @@ summary at the end. Any explicit flag still wins, so
 `pu update:craft --maintenance --parallel=5 --no-push` overrides just
 those two defaults.
 
+Because a dedicated update server never carries real local work,
+`--maintenance` also **hard-resets any repo with uncommitted changes**
+before updating it (`git reset --hard HEAD` + `git clean -fd`) instead of
+skipping it, then lets the normal sync steps (`ddev composer install`,
+`migrate/all`, `project-config/apply --force`) bring dependencies and
+project config back in line. Gitignored paths (`vendor/`, `.env`,
+`storage/`) are left untouched. This only happens under `--maintenance` —
+a normal `update:craft` run still skips dirty repos.
+
 ### `retry`
 
 Re-runs the most recent `update:all` or `update:craft` non-interactively

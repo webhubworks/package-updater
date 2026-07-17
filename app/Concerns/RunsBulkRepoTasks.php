@@ -39,6 +39,7 @@ trait RunsBulkRepoTasks
 {
     /**
      * @template TItem
+     *
      * @param  list<TItem>  $items
      * @param  Closure(TItem): string  $pathOf
      * @param  Closure(TItem, Closure): RepoUpdateResult  $updater
@@ -65,6 +66,7 @@ trait RunsBulkRepoTasks
 
     /**
      * @template TItem
+     *
      * @param  list<TItem>  $items
      * @param  Closure(TItem): string  $pathOf
      * @param  Closure(TItem, string, string): list<string>  $buildCmd
@@ -72,7 +74,7 @@ trait RunsBulkRepoTasks
      */
     protected function runParallel(array $items, int $workers, Closure $pathOf, Closure $buildCmd): array
     {
-        $php = (new PhpExecutableFinder())->find() ?: PHP_BINARY;
+        $php = (new PhpExecutableFinder)->find() ?: PHP_BINARY;
         $binary = base_path('package-updater');
         $consoleOutput = $this->getConsoleOutput();
         $decorated = $consoleOutput !== null && $consoleOutput->isDecorated();
@@ -190,6 +192,7 @@ trait RunsBulkRepoTasks
     {
         if (! $decorated || $consoleOutput === null) {
             $this->line($line);
+
             return;
         }
 
@@ -199,7 +202,7 @@ trait RunsBulkRepoTasks
             $buffer .= sprintf("\x1b[%dA\r\x1b[0J", $liveLineCount);
             $liveLineCount = 0;
         }
-        $buffer .= $formatted . "\n";
+        $buffer .= $formatted."\n";
         $consoleOutput->write($buffer, false, OutputInterface::OUTPUT_RAW);
     }
 
@@ -224,7 +227,7 @@ trait RunsBulkRepoTasks
             $buffer .= sprintf("\x1b[%dA\r", $liveLineCount);
         }
         foreach ($lines as $line) {
-            $buffer .= $line . "\x1b[K\n";
+            $buffer .= $line."\x1b[K\n";
         }
         if ($liveLineCount > $newCount) {
             $buffer .= "\x1b[0J";
@@ -252,7 +255,7 @@ trait RunsBulkRepoTasks
      * indented under the header. When no progress has streamed yet, only the
      * header is rendered.
      *
-     * @param array{repo: string, index: int, started: float, lines: list<array{kind: string, text: string}>} $entry
+     * @param  array{repo: string, index: int, started: float, lines: list<array{kind: string, text: string}>}  $entry
      */
     protected function formatRunningSection(array $entry, string $spinnerFrame, int $total): string
     {
@@ -262,18 +265,19 @@ trait RunsBulkRepoTasks
         }
 
         $indent = '      ';
-        $maxWidth = max(40, (new Terminal())->getWidth() - mb_strlen($indent) - 4);
+        $maxWidth = max(40, (new Terminal)->getWidth() - mb_strlen($indent) - 4);
         $body = implode("\n", array_map(function (array $l) use ($indent, $maxWidth) {
             $text = self::truncateForDisplay($l['text'], $maxWidth);
             $escaped = OutputFormatter::escape($text);
+
             return match ($l['kind']) {
-                'step' => $indent . '<fg=blue>→</> ' . $escaped,
-                'err' => $indent . '<fg=yellow>' . $escaped . '</>',
-                default => $indent . '<fg=gray>' . $escaped . '</>',
+                'step' => $indent.'<fg=blue>→</> '.$escaped,
+                'err' => $indent.'<fg=yellow>'.$escaped.'</>',
+                default => $indent.'<fg=gray>'.$escaped.'</>',
             };
         }, $entry['lines']));
 
-        return $header . "\n" . $body;
+        return $header."\n".$body;
     }
 
     /**
@@ -308,6 +312,7 @@ trait RunsBulkRepoTasks
             if ($label === '') {
                 return [];
             }
+
             return [['kind' => 'step', 'text' => $label]];
         }
 
@@ -334,7 +339,8 @@ trait RunsBulkRepoTasks
         if ($maxWidth <= 1 || mb_strlen($text) <= $maxWidth) {
             return $text;
         }
-        return mb_substr($text, 0, $maxWidth - 1) . '…';
+
+        return mb_substr($text, 0, $maxWidth - 1).'…';
     }
 
     /** @param array{repo: string, index: int, started: float} $entry */
@@ -395,16 +401,18 @@ trait RunsBulkRepoTasks
         try {
             $process->run();
         } catch (\Throwable $e) {
-            warning('ddev auth ssh did not run cleanly: ' . $e->getMessage() . '. Continuing — repos needing SSH may fail. If your SSH keys have passphrases, run `ddev auth ssh` manually first then re-run with --no-ssh-auth.');
+            warning('ddev auth ssh did not run cleanly: '.$e->getMessage().'. Continuing — repos needing SSH may fail. If your SSH keys have passphrases, run `ddev auth ssh` manually first then re-run with --no-ssh-auth.');
+
             return;
         }
 
         if (! $process->isSuccessful()) {
             warning('ddev auth ssh exited non-zero. Repos requiring SSH-based composer sources may fail.');
+
             return;
         }
 
-        $combined = $process->getOutput() . "\n" . $process->getErrorOutput();
+        $combined = $process->getOutput()."\n".$process->getErrorOutput();
         $count = preg_match('/(?:Adding|Successfully added)\s+(\d+)\s+SSH private key/i', $combined, $m)
             ? (int) $m[1]
             : null;
@@ -419,6 +427,7 @@ trait RunsBulkRepoTasks
         return function (string $event, ?string $type, ?string $payload): void {
             if ($event === 'step-start') {
                 $this->line("  <fg=blue>→</> {$payload}");
+
                 return;
             }
 
@@ -559,9 +568,13 @@ trait RunsBulkRepoTasks
      * Returns true to proceed, false when the user wants to abort. In --yes
      * mode the list is still printed but the prompt is auto-confirmed.
      *
+     * When $willAutoReset is true (maintenance mode), dirty repos are hard-reset
+     * and updated rather than skipped, so the wording reflects that and the
+     * abort prompt is dropped — there is nothing for the user to clean up.
+     *
      * @param  list<string>  $repos  absolute repo paths
      */
-    protected function confirmDirtyRepos(array $repos): bool
+    protected function confirmDirtyRepos(array $repos, bool $willAutoReset = false): bool
     {
         if (empty($repos)) {
             return true;
@@ -595,7 +608,9 @@ trait RunsBulkRepoTasks
         }
 
         warning(sprintf(
-            '%d of %d repo(s) have uncommitted changes — they will be skipped unless cleaned up before the run:',
+            $willAutoReset
+                ? '%d of %d repo(s) have uncommitted changes — they will be hard-reset (git reset --hard + git clean -fd) before the run:'
+                : '%d of %d repo(s) have uncommitted changes — they will be skipped unless cleaned up before the run:',
             count($dirty),
             count($repos),
         ));
@@ -611,7 +626,9 @@ trait RunsBulkRepoTasks
             ));
         }
 
-        if ($this->option('yes')) {
+        // In auto-reset mode there is nothing for the user to clean up, so
+        // don't gate the run behind a confirmation.
+        if ($willAutoReset || $this->option('yes')) {
             return true;
         }
 
@@ -637,7 +654,7 @@ trait RunsBulkRepoTasks
         }
 
         return array_values(array_filter($matches, function ($m) use ($filter) {
-            $composerJson = $m['path'] . '/composer.json';
+            $composerJson = $m['path'].'/composer.json';
             $content = @file_get_contents($composerJson);
             if ($content === false) {
                 return false;
@@ -681,7 +698,7 @@ trait RunsBulkRepoTasks
         } else {
             $options = [];
             foreach ($candidates as $r) {
-                $options[$r->repoPath] = basename($r->repoPath) . OpenCommand::badge($r);
+                $options[$r->repoPath] = basename($r->repoPath).OpenCommand::badge($r);
             }
             $selected = multiselect(
                 label: sprintf('Open %d repo(s) in GitKraken?', count($candidates)),

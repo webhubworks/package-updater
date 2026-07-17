@@ -173,7 +173,7 @@ class UpdateCraftCommand extends UpdateAllCommand
 
         $sweepPatterns = $this->resolveSweepPatterns();
 
-        if (! $this->confirmDirtyRepos(array_map(fn ($m) => $m['path'], $matches))) {
+        if (! $this->confirmDirtyRepos(array_map(fn ($m) => $m['path'], $matches), willAutoReset: (bool) $this->option('maintenance'))) {
             return self::SUCCESS;
         }
 
@@ -207,6 +207,11 @@ class UpdateCraftCommand extends UpdateAllCommand
             $packagesByPath[$m['path']] = $m['package'];
         }
 
+        // In maintenance mode the host runs updates exclusively, so a dirty
+        // repo is a leftover from a previous run: hard-reset it and update
+        // anyway instead of skipping.
+        $resetIfDirty = (bool) $this->option('maintenance');
+
         $updater = fn (string $repo, callable $onProgress) => UpdateRepoAction::update(
             repoPath: $repo,
             package: $packagesByPath[$repo],
@@ -217,9 +222,10 @@ class UpdateCraftCommand extends UpdateAllCommand
             commit: $commit,
             sweepPatterns: $sweepPatterns,
             push: $push,
+            resetIfDirty: $resetIfDirty,
         );
 
-        $buildCmd = function (string $repo, string $php, string $binary) use ($packagesByPath, $craftCommandLine, $keepDdevRunning, $crawlSet, $crawlerCommandLine, $commit, $sweepPatterns, $push): array {
+        $buildCmd = function (string $repo, string $php, string $binary) use ($packagesByPath, $craftCommandLine, $keepDdevRunning, $crawlSet, $crawlerCommandLine, $commit, $sweepPatterns, $push, $resetIfDirty): array {
             $cmd = [$php, $binary, 'update:single', $repo, $packagesByPath[$repo], '--craft-command='.$craftCommandLine];
             if (! $keepDdevRunning) {
                 $cmd[] = '--stop-ddev';
@@ -232,6 +238,9 @@ class UpdateCraftCommand extends UpdateAllCommand
             }
             if ($push) {
                 $cmd[] = '--push';
+            }
+            if ($resetIfDirty) {
+                $cmd[] = '--reset-if-dirty';
             }
             foreach ($sweepPatterns as $pattern) {
                 $cmd[] = '--composer-sweep='.$pattern;
