@@ -146,6 +146,14 @@ project config back in line. Gitignored paths (`vendor/`, `.env`,
 `storage/`) are left untouched. This only happens under `--maintenance` —
 a normal `update:craft` run still skips dirty repos.
 
+`--maintenance` also **retries the craft update once on a transient
+composer download failure** (a corrupt/0-byte dist zip, a truncated
+download). Before retrying it restores a healthy state — `git reset
+--hard` + `git clean -fd`, `ddev composer clear-cache`, then `ddev
+composer install` from the committed lock — so a half-extracted vendor
+tree (which can stop Craft from even booting) can't wedge the retry.
+Genuine dependency conflicts are never retried.
+
 ### `retry`
 
 Re-runs the most recent `update:all` or `update:craft` non-interactively

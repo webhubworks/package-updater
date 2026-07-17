@@ -7,6 +7,12 @@ use Symfony\Component\Process\Process;
 
 final class UpdateRepoAction
 {
+    /**
+     * How many times a craft update is re-attempted after a transient composer
+     * download failure (corrupt/0-byte dist zip) during a maintenance run.
+     */
+    private const MaintenanceUpdateRetries = 1;
+
     private const BranchCandidates = ['develop', 'dev', 'staging', 'stag', 'stage', 'main', 'master', 'prod', 'live'];
 
     /**
@@ -211,7 +217,7 @@ final class UpdateRepoAction
 
         $packageStep = $removeSpec !== null
             ? self::runRemoveStep($repoPath, $branch, $removeSpec, $onProgress)
-            : self::runUpdateStep($repoPath, $branch, $updatePackage, $withAllDependencies, $craftCommandLine, $onProgress);
+            : self::runUpdateStep($repoPath, $branch, $updatePackage, $withAllDependencies, $craftCommandLine, $onProgress, $resetIfDirty);
 
         if ($packageStep instanceof RepoUpdateResult) {
             return $packageStep;
@@ -396,6 +402,13 @@ final class UpdateRepoAction
      * Run the composer/craft update step. Returns the parsed package-updates
      * list on success, or a failure RepoUpdateResult to short-circuit doUpdate.
      *
+     * When $allowTransientRetry is true (maintenance mode) and a craft update
+     * fails with a transient composer download error — a corrupt/0-byte dist
+     * zip, a truncated download — the step recovers (git reset + clean, clear
+     * the composer cache, reinstall the committed lock so the vendor tree is
+     * healthy again) and retries up to MaintenanceUpdateRetries times. This is
+     * only safe under maintenance because the recovery hard-resets the repo.
+     *
      * @param  callable(string, ?string, ?string): void|null  $onProgress
      * @return list<array{name: string, from: string, to: string}>|RepoUpdateResult
      */
@@ -406,6 +419,7 @@ final class UpdateRepoAction
         bool $withAllDependencies,
         ?string $craftCommandLine,
         ?callable $onProgress,
+        bool $allowTransientRetry = false,
     ): array|RepoUpdateResult {
         if ($craftCommandLine !== null) {
             $updateCommand = $craftCommandLine;
@@ -420,16 +434,98 @@ final class UpdateRepoAction
             $failStep = 'ddev composer update';
         }
 
-        $update = self::run($updateCommand, $repoPath, 1800, $onProgress, $updateLabel);
-        if (! $update->isSuccessful()) {
-            return self::fail($repoPath, $branch, $failStep, $update);
+        // Retries only apply to craft-mode maintenance runs; every other path
+        // runs exactly once.
+        $maxAttempts = $allowTransientRetry && $craftCommandLine !== null
+            ? 1 + self::MaintenanceUpdateRetries
+            : 1;
+
+        for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
+            $label = $attempt === 1 ? $updateLabel : "{$updateLabel} (retry {$attempt}/{$maxAttempts})";
+            $update = self::run($updateCommand, $repoPath, 1800, $onProgress, $label);
+
+            if ($update->isSuccessful()) {
+                $combined = $update->getOutput()."\n".$update->getErrorOutput();
+
+                return $craftCommandLine !== null
+                    ? self::parseCraftUpdates($combined)
+                    : self::parseComposerUpdates($combined);
+            }
+
+            $isLastAttempt = $attempt === $maxAttempts;
+            $combined = $update->getOutput()."\n".$update->getErrorOutput();
+            if ($isLastAttempt || ! self::isTransientComposerDownloadFailure($combined)) {
+                return self::fail($repoPath, $branch, $failStep, $update);
+            }
+
+            if ($onProgress !== null) {
+                $onProgress('step-start', null, 'transient composer download failure — clearing cache, restoring vendor and retrying');
+            }
+            if (! self::recoverBeforeUpdateRetry($repoPath, $onProgress)) {
+                return self::fail($repoPath, $branch, $failStep, $update);
+            }
         }
 
-        $combined = $update->getOutput()."\n".$update->getErrorOutput();
+        // Unreachable: the loop either returns a result or fails on the last
+        // attempt, but keep the analyzer happy.
+        return self::fail($repoPath, $branch, $failStep, $update);
+    }
 
-        return $craftCommandLine !== null
-            ? self::parseCraftUpdates($combined)
-            : self::parseComposerUpdates($combined);
+    /**
+     * Detect composer failures that are worth retrying: a corrupt/0-byte dist
+     * zip, a truncated download, or an interrupted transfer. These are network
+     * / CDN hiccups rather than dependency-resolution problems, so a fresh
+     * attempt usually succeeds. Kept deliberately narrow so genuine conflicts
+     * ("your requirements could not be resolved") are never retried.
+     */
+    public static function isTransientComposerDownloadFailure(string $combinedOutput): bool
+    {
+        $haystack = strtolower($combinedOutput);
+        $markers = [
+            'corrupted zip archive',
+            'end-of-central-directory signature not found',
+            'failed to extract',
+            'could not be downloaded',
+            'content-length',
+            'curl error',
+        ];
+
+        foreach ($markers as $marker) {
+            if (str_contains($haystack, $marker)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Restore a repo to a healthy, bootable state before retrying a craft
+     * update that failed mid-download. A failed extract can leave the vendor
+     * tree half-removed (so Craft can't even boot to run its own revert), so we
+     * hard-reset the tracked files, clear composer's cache (a truncated zip can
+     * be cached), and reinstall from the committed lock. Only called under
+     * maintenance mode. Returns true when the repo is clean and reinstalled.
+     *
+     * @param  callable(string, ?string, ?string): void|null  $onProgress
+     */
+    private static function recoverBeforeUpdateRetry(string $repoPath, ?callable $onProgress): bool
+    {
+        $steps = [
+            [['git', 'reset', '--hard', 'HEAD'], 'git reset --hard HEAD'],
+            [['git', 'clean', '-fd'], 'git clean -fd'],
+            [['ddev', 'composer', 'clear-cache'], 'ddev composer clear-cache'],
+            [['ddev', 'composer', 'install'], 'ddev composer install'],
+        ];
+
+        foreach ($steps as [$args, $label]) {
+            $proc = self::run($args, $repoPath, 1800, $onProgress, $label);
+            if (! $proc->isSuccessful()) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /**
