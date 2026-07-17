@@ -49,6 +49,7 @@ class RemoveCommand extends Command
 
         if (! is_dir($reposDir)) {
             $this->error("Repos directory not found: {$reposDir}");
+
             return self::FAILURE;
         }
 
@@ -68,6 +69,7 @@ class RemoveCommand extends Command
 
         if (empty($matches)) {
             warning("No repositories under {$reposDir} require {$package}.");
+
             return self::SUCCESS;
         }
 
@@ -76,10 +78,11 @@ class RemoveCommand extends Command
 
         if (empty($matches)) {
             warning(sprintf(
-                "No repos remain after --filter-name=%s (started with %d).",
+                'No repos remain after --filter-name=%s (started with %d).',
                 (string) $this->option('filter-name'),
                 $totalFound,
             ));
+
             return self::SUCCESS;
         }
 
@@ -117,17 +120,20 @@ class RemoveCommand extends Command
             }
             table(['Repo', 'Package', 'Section'], $rows);
             note('Dry run — no changes were made.');
+
             return self::SUCCESS;
         }
 
         if (empty($plans)) {
             $this->printSummary($preSkipped);
+
             return self::SUCCESS;
         }
 
         $plans = $this->resolvePlanSelection($plans);
         if (empty($plans)) {
             info('No repos selected — exiting.');
+
             return self::SUCCESS;
         }
 
@@ -138,7 +144,7 @@ class RemoveCommand extends Command
 
         $mode = $parallel === 1 ? 'sequentially' : "with {$parallel} workers in parallel";
 
-        if (! $this->option('yes') && ! confirm("Run `composer remove {$package}` in " . count($plans) . " repos {$mode}?", default: true)) {
+        if (! $this->option('yes') && ! confirm("Run `composer remove {$package}` in ".count($plans)." repos {$mode}?", default: true)) {
             return self::SUCCESS;
         }
 
@@ -171,7 +177,7 @@ class RemoveCommand extends Command
         $buildCmd = function (array $plan, string $php, string $binary) use ($keepDdevRunning, $push): array {
             $cmd = [$php, $binary, 'remove:single', $plan['path']];
             foreach ($plan['spec'] as $entry) {
-                $cmd[] = '--package=' . $entry['name'] . '=' . ($entry['dev'] ? '1' : '0');
+                $cmd[] = '--package='.$entry['name'].'='.($entry['dev'] ? '1' : '0');
             }
             if (! $keepDdevRunning) {
                 $cmd[] = '--stop-ddev';
@@ -179,6 +185,7 @@ class RemoveCommand extends Command
             if ($push) {
                 $cmd[] = '--push';
             }
+
             return $cmd;
         };
 
@@ -223,6 +230,7 @@ class RemoveCommand extends Command
                         ? 'no matching package is a direct dependency'
                         : "{$package} is only a transitive dependency — composer remove not applicable",
                 );
+
                 continue;
             }
 
@@ -257,6 +265,7 @@ class RemoveCommand extends Command
 
         if (! empty($cliRepos)) {
             $set = array_flip($cliRepos);
+
             return array_values(array_filter($plans, fn ($p) => isset($set[$p['path']])));
         }
 
@@ -266,8 +275,8 @@ class RemoveCommand extends Command
 
         $options = [];
         foreach ($plans as $p) {
-            $names = array_map(fn ($e) => $e['name'] . ($e['dev'] ? ' [dev]' : ''), $p['spec']);
-            $options[$p['path']] = basename($p['path']) . ' (' . implode(', ', $names) . ')';
+            $names = array_map(fn ($e) => $e['name'].($e['dev'] ? ' [dev]' : ''), $p['spec']);
+            $options[$p['path']] = basename($p['path']).' ('.implode(', ', $names).')';
         }
 
         $selected = multiselect(

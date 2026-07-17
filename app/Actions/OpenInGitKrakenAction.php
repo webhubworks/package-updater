@@ -24,7 +24,7 @@ final class OpenInGitKrakenAction
             // (the leading "/" of the absolute path serves as the separator;
             // any other prefix like "path/" makes GitKraken treat it as a
             // new directory that needs to be initialised).
-            $url = 'gitkraken://repo' . $path;
+            $url = 'gitkraken://repo'.$path;
             $process = new Process(['open', $url]);
             $process->setTimeout(15);
 
@@ -32,11 +32,13 @@ final class OpenInGitKrakenAction
                 $process->run();
             } catch (\Throwable) {
                 $failed[] = $path;
+
                 continue;
             }
 
             if (! $process->isSuccessful()) {
                 $failed[] = $path;
+
                 continue;
             }
 

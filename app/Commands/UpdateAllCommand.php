@@ -56,6 +56,7 @@ class UpdateAllCommand extends Command
 
         if (! is_dir($reposDir)) {
             $this->error("Repos directory not found: {$reposDir}");
+
             return self::FAILURE;
         }
 
@@ -75,6 +76,7 @@ class UpdateAllCommand extends Command
 
         if (empty($matches)) {
             warning("No repositories under {$reposDir} require {$package}.");
+
             return self::SUCCESS;
         }
 
@@ -83,10 +85,11 @@ class UpdateAllCommand extends Command
 
         if (empty($matches)) {
             warning(sprintf(
-                "No repos remain after --filter-name=%s (started with %d).",
+                'No repos remain after --filter-name=%s (started with %d).',
                 (string) $this->option('filter-name'),
                 $totalFound,
             ));
+
             return self::SUCCESS;
         }
 
@@ -122,6 +125,7 @@ class UpdateAllCommand extends Command
                 );
             }
             note('Dry run — no changes were made. Note: versions reflect each repo\'s current local composer.lock and may be stale.');
+
             return self::SUCCESS;
         }
 
@@ -135,6 +139,7 @@ class UpdateAllCommand extends Command
 
             if (empty($matches)) {
                 $this->printSummary($preSkipped, $targetVersion);
+
                 return self::SUCCESS;
             }
         }
@@ -147,6 +152,7 @@ class UpdateAllCommand extends Command
             foreach ($matches as $m) {
                 if (FindReposAction::hasPackageInLock($m['path'], $updatePackage)) {
                     $applicable[] = $m;
+
                     continue;
                 }
                 $skippedNoParent[] = RepoUpdateResult::skipped(
@@ -170,6 +176,7 @@ class UpdateAllCommand extends Command
 
             if (empty($matches)) {
                 $this->printSummary($preSkipped, $targetVersion);
+
                 return self::SUCCESS;
             }
         }
@@ -181,6 +188,7 @@ class UpdateAllCommand extends Command
         $matches = $this->resolveRepoSelection($matches);
         if (empty($matches)) {
             info('No repos selected — exiting.');
+
             return self::SUCCESS;
         }
 
@@ -192,8 +200,8 @@ class UpdateAllCommand extends Command
         $repos = array_map(fn ($m) => $m['path'], $matches);
         $mode = $parallel === 1 ? 'sequentially' : "with {$parallel} workers in parallel";
 
-        $composerCmd = 'composer update ' . $updatePackage . ($withAllDependencies ? ' -W' : '');
-        if (! $this->option('yes') && ! confirm("Run `{$composerCmd}` in " . count($repos) . " repos {$mode}?", default: true)) {
+        $composerCmd = 'composer update '.$updatePackage.($withAllDependencies ? ' -W' : '');
+        if (! $this->option('yes') && ! confirm("Run `{$composerCmd}` in ".count($repos)." repos {$mode}?", default: true)) {
             return self::SUCCESS;
         }
 
@@ -239,7 +247,7 @@ class UpdateAllCommand extends Command
                 $cmd[] = '--with-all-dependencies';
             }
             if ($updatePackage !== $package) {
-                $cmd[] = '--update-package=' . $updatePackage;
+                $cmd[] = '--update-package='.$updatePackage;
             }
             if (! $keepDdevRunning) {
                 $cmd[] = '--stop-ddev';
@@ -250,6 +258,7 @@ class UpdateAllCommand extends Command
             if ($push) {
                 $cmd[] = '--push';
             }
+
             return $cmd;
         };
 
@@ -305,6 +314,7 @@ class UpdateAllCommand extends Command
 
         if (! empty($cliRepos)) {
             $set = array_flip($cliRepos);
+
             return array_values(array_filter($matches, fn ($m) => isset($set[$m['path']])));
         }
 
@@ -314,7 +324,7 @@ class UpdateAllCommand extends Command
 
         $options = [];
         foreach ($matches as $m) {
-            $label = basename($m['path']) . ' (' . $m['version'] . ')';
+            $label = basename($m['path']).' ('.$m['version'].')';
             if (isset($m['matchedPackages']) && count($m['matchedPackages']) > 1) {
                 $names = array_map(fn ($p) => $p['name'], $m['matchedPackages']);
                 $preview = array_slice($names, 0, 3);
@@ -322,7 +332,7 @@ class UpdateAllCommand extends Command
                 if (count($names) > 3) {
                     $suffix .= ', ...';
                 }
-                $label = basename($m['path']) . ' (' . $m['version'] . ': ' . $suffix . ')';
+                $label = basename($m['path']).' ('.$m['version'].': '.$suffix.')';
             }
             $options[$m['path']] = $label;
         }
@@ -358,6 +368,7 @@ class UpdateAllCommand extends Command
         );
 
         $value = trim($value);
+
         return $value === '' ? null : $value;
     }
 
@@ -390,6 +401,7 @@ class UpdateAllCommand extends Command
         if (preg_match('/^(\d+)/', $v, $m)) {
             return (int) $m[1];
         }
+
         return null;
     }
 
@@ -421,6 +433,7 @@ class UpdateAllCommand extends Command
             if (self::versionsEqual($m['version'], $cleanTarget)) {
                 $preSkipped[] = RepoUpdateResult::skipped($m['path'], "already at {$cleanTarget}");
                 $alreadyAt++;
+
                 continue;
             }
 
@@ -432,6 +445,7 @@ class UpdateAllCommand extends Command
                         "on major {$currentMajor} ({$m['version']}); prefix target with `!` to cross majors",
                     );
                     $differentMajor++;
+
                     continue;
                 }
             }
@@ -483,7 +497,7 @@ class UpdateAllCommand extends Command
         if (! empty($candidates)) {
             $totalRepos = count($matches);
             $hint = "Detected parent packages (across matched repos):\n  "
-                . implode("\n  ", array_map(
+                .implode("\n  ", array_map(
                     fn ($c) => sprintf('• %s (in %d/%d repos)', $c['name'], $c['repoCount'], $totalRepos),
                     array_slice($candidates, 0, 5),
                 ));
@@ -535,7 +549,7 @@ class UpdateAllCommand extends Command
         ));
 
         if (! empty($success)) {
-            note('Successful updates' . ($targetVersion !== null ? " (target: {$targetVersion})" : '') . ':');
+            note('Successful updates'.($targetVersion !== null ? " (target: {$targetVersion})" : '').':');
             table(
                 ['Repo', 'Branch', 'From', 'To', 'Tests', 'Note'],
                 array_map(function (RepoUpdateResult $r) use ($targetVersion) {
@@ -547,6 +561,7 @@ class UpdateAllCommand extends Command
                     $from = $r->previousVersion ?? ($singlePackageTracked ? '?' : '-');
                     $to = $r->installedVersion ?? ($singlePackageTracked ? '?' : '-');
                     $note = self::successNote($r, $targetVersion);
+
                     return [basename($r->repoPath), $r->branch ?? '-', $from, $to, self::testsCell($r), $note];
                 }, $success),
             );
@@ -704,7 +719,7 @@ class UpdateAllCommand extends Command
             $committedNote = $count > 0
                 ? sprintf('committed %d update(s)', $count)
                 : 'committed (no parsed updates)';
-            $parts[] = $r->pushed ? $committedNote . ' + pushed' : $committedNote;
+            $parts[] = $r->pushed ? $committedNote.' + pushed' : $committedNote;
         } elseif ($r->hasUncommittedChanges) {
             $parts[] = 'uncommitted changes';
         }
@@ -735,7 +750,7 @@ class UpdateAllCommand extends Command
 
         $maxLen = 240;
         if (mb_strlen($detail) > $maxLen) {
-            $detail = mb_substr($detail, 0, $maxLen) . '… (full output in log)';
+            $detail = mb_substr($detail, 0, $maxLen).'… (full output in log)';
         }
 
         $this->newLine();

@@ -3,7 +3,7 @@
 use App\Actions\UpdateRepoAction;
 
 it('parses the [ERROR] Found N errors line', function () {
-    $output = <<<TXT
+    $output = <<<'TXT'
  ------ ----------------------------------------
   Line   src/Foo.php
  ------ ----------------------------------------

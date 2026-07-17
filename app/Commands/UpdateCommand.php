@@ -33,17 +33,20 @@ class UpdateCommand extends Command
 
         if (! is_file($cwd.'/composer.json')) {
             $this->error("No composer.json found in {$cwd}");
+
             return self::FAILURE;
         }
 
         if (! is_dir($cwd.'/.git')) {
             $this->error("{$cwd} is not a git repository");
+
             return self::FAILURE;
         }
 
         $status = $this->exec(['git', 'status', '--porcelain'], $cwd, stream: false);
         if (! $status->isSuccessful()) {
             $this->error('git status failed: '.trim($status->getErrorOutput() ?: $status->getOutput()));
+
             return self::FAILURE;
         }
         if (trim($status->getOutput()) !== '') {
@@ -97,6 +100,7 @@ class UpdateCommand extends Command
             $this->error("{$failedLabel} failed (exit {$update->getExitCode()}):");
             $this->dumpOutput($update);
             $this->printLogPath($logPath);
+
             return self::FAILURE;
         }
 
@@ -180,6 +184,7 @@ class UpdateCommand extends Command
         }
 
         $this->newLine();
+
         return confirm(
             label: 'Security advisories were found. Still run prep?',
             default: true,
@@ -330,6 +335,7 @@ class UpdateCommand extends Command
     {
         if ($this->option('show-output')) {
             info("Running: {$label}");
+
             return $this->exec($cmd, $cwd, stream: true, usePty: $usePty);
         }
 
@@ -348,11 +354,12 @@ class UpdateCommand extends Command
     {
         if (! $this->output->isDecorated()) {
             $this->line("  Running `{$label}`...");
+
             return $this->exec($cmd, $cwd, stream: false, usePty: $usePty);
         }
 
         $maxLines = 5;
-        $width = max(40, (new Terminal())->getWidth() - 6);
+        $width = max(40, (new Terminal)->getWidth() - 6);
         $buffer = [];
         $rendered = 0;
         $output = $this->output;
@@ -371,7 +378,7 @@ class UpdateCommand extends Command
             $shown = array_slice($buffer, -$maxLines);
             foreach ($shown as $line) {
                 $line = mb_strimwidth($line, 0, $width, '…');
-                $output->writeln('    <fg=gray>' . OutputFormatter::escape($line) . '</>');
+                $output->writeln('    <fg=gray>'.OutputFormatter::escape($line).'</>');
                 $rendered++;
             }
         };
@@ -481,6 +488,7 @@ class UpdateCommand extends Command
         $add = $this->exec(['git', 'add', '-A'], $cwd, stream: false);
         if (! $add->isSuccessful()) {
             warning('git add -A failed.');
+
             return false;
         }
 
@@ -500,10 +508,12 @@ class UpdateCommand extends Command
         );
         if (! $commit->isSuccessful()) {
             warning('git commit failed.');
+
             return false;
         }
 
         info('Committed.');
+
         return true;
     }
 
@@ -554,10 +564,12 @@ class UpdateCommand extends Command
             if (preg_match('/^Lock file operations:/i', $trimmed)) {
                 $sawLockHeader = true;
                 $inLockSection = true;
+
                 continue;
             }
             if ($inLockSection && preg_match('/^(Writing lock file|Package operations:|Installing dependencies)/i', $trimmed)) {
                 $inLockSection = false;
+
                 continue;
             }
             // Once we've seen the lock block, ignore everything outside it. If
@@ -573,16 +585,19 @@ class UpdateCommand extends Command
 
             if (preg_match('/^Upgrading\s+(\S+)\s+\(([^\s)]+)\s*=>\s*([^\s)]+)\)/', $rest, $m)) {
                 $byName[$m[1]] = ['kind' => 'upgrade', 'name' => $m[1], 'from' => $m[2], 'to' => $m[3]];
+
                 continue;
             }
             if (preg_match('/^Downgrading\s+(\S+)\s+\(([^\s)]+)\s*=>\s*([^\s)]+)\)/', $rest, $m)) {
                 $byName[$m[1]] = ['kind' => 'downgrade', 'name' => $m[1], 'from' => $m[2], 'to' => $m[3]];
+
                 continue;
             }
             if (preg_match('/^Installing\s+(\S+)\s+\(([^\s)]+)\)/', $rest, $m)) {
                 if (! isset($byName[$m[1]])) {
                     $byName[$m[1]] = ['kind' => 'install', 'name' => $m[1], 'from' => null, 'to' => $m[2]];
                 }
+
                 continue;
             }
             if (preg_match('/^Removing\s+(\S+)\s+\(([^\s)]+)\)/', $rest, $m)) {

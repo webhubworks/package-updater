@@ -31,6 +31,7 @@ class RemoveSingleCommand extends Command
 
         if (empty($spec)) {
             $this->error('--package is required at least once');
+
             return self::FAILURE;
         }
 

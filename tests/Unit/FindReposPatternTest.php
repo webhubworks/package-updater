@@ -3,7 +3,7 @@
 use App\Actions\FindReposAction;
 
 beforeEach(function () {
-    $this->root = sys_get_temp_dir() . '/pu-find-' . uniqid();
+    $this->root = sys_get_temp_dir().'/pu-find-'.uniqid();
     mkdir($this->root, 0755, true);
 });
 
@@ -14,7 +14,7 @@ afterEach(function () {
                 if ($entry === '.' || $entry === '..') {
                     continue;
                 }
-                $path = $dir . '/' . $entry;
+                $path = $dir.'/'.$entry;
                 is_dir($path) ? $rrmdir($path) : unlink($path);
             }
             rmdir($dir);
@@ -25,16 +25,17 @@ afterEach(function () {
 
 function makeRepo(string $root, string $name, array $lockPackages, array $composerRequire = []): string
 {
-    $repo = $root . '/' . $name;
-    mkdir($repo . '/.git', 0755, true);
-    file_put_contents($repo . '/composer.json', json_encode([
-        'name' => 'acme/' . $name,
+    $repo = $root.'/'.$name;
+    mkdir($repo.'/.git', 0755, true);
+    file_put_contents($repo.'/composer.json', json_encode([
+        'name' => 'acme/'.$name,
         'require' => $composerRequire,
     ]));
-    file_put_contents($repo . '/composer.lock', json_encode([
+    file_put_contents($repo.'/composer.lock', json_encode([
         'packages' => $lockPackages,
         'packages-dev' => [],
     ]));
+
     return $repo;
 }
 
@@ -63,14 +64,14 @@ it('matches all locked packages under a wildcard and reports counts and directne
 
     expect($matches)->toHaveCount(2);
 
-    $a = collect($matches)->firstWhere('path', $this->root . '/site-a');
+    $a = collect($matches)->firstWhere('path', $this->root.'/site-a');
     expect($a['version'])->toBe('2 packages');
     expect($a['isDirect'])->toBeTrue();
     expect($a['matchedPackages'])->toHaveCount(2);
     expect(array_column($a['matchedPackages'], 'name'))
         ->toBe(['laravel-lang/common', 'laravel-lang/lang']);
 
-    $c = collect($matches)->firstWhere('path', $this->root . '/site-c');
+    $c = collect($matches)->firstWhere('path', $this->root.'/site-c');
     expect($c['version'])->toBe('1.2.3');
     expect($c['matchedPackages'])->toHaveCount(1);
 });

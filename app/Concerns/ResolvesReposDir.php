@@ -36,18 +36,21 @@ trait ResolvesReposDir
         $userValue = UserConfig::getReposDir();
         if ($userValue !== null) {
             config()->set('package-updater.repos_dir', $userValue);
+
             return rtrim($userValue, '/');
         }
 
         info('No repos directory configured yet — running `pu setup` first.');
         if ($this->call('setup') !== 0) {
             $this->error('Setup did not complete; aborting.');
+
             return null;
         }
 
         $configured = UserConfig::getReposDir();
         if (! is_string($configured) || $configured === '') {
             $this->error('Setup did not save a repos directory; aborting.');
+
             return null;
         }
 

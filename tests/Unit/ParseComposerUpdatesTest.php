@@ -8,7 +8,7 @@ test('reads only the Lock file operations block, not Package operations', functi
     // panoptikum, but the "Package operations" block lists every package whose
     // installed version catches up to the lock. The commit reflects the lock,
     // so the parser must ignore the Package operations block.
-    $output = <<<TXT
+    $output = <<<'TXT'
 Loading composer repositories with package information
 Updating dependencies
 Lock file operations: 0 installs, 2 updates, 0 removals
@@ -31,7 +31,7 @@ TXT;
 });
 
 test('returns no updates when the lock file is unchanged', function () {
-    $output = <<<TXT
+    $output = <<<'TXT'
 Updating dependencies
 Lock file operations: 0 installs, 0 updates, 0 removals
 Nothing to modify in lock file
@@ -46,7 +46,7 @@ TXT;
 });
 
 test('skips newly-installed packages in the lock block', function () {
-    $output = <<<TXT
+    $output = <<<'TXT'
 Lock file operations: 1 install, 1 update, 0 removals
   - Installing some/new-package (1.0.0)
   - Upgrading guzzlehttp/guzzle (7.10.4 => 7.11.0)
@@ -59,7 +59,7 @@ TXT;
 });
 
 test('falls back to scanning all bullet lines when no lock header is present', function () {
-    $output = <<<TXT
+    $output = <<<'TXT'
   - Upgrading guzzlehttp/guzzle (7.10.4 => 7.11.0)
   - Downgrading some/pkg (2.0.0 => 1.9.0)
 TXT;

@@ -30,7 +30,7 @@ final class FindReposAction
         $dirs = self::collectRepoDirs(rtrim($reposDir, '/'));
 
         foreach ($dirs as $dir) {
-            $lock = $dir . '/composer.lock';
+            $lock = $dir.'/composer.lock';
 
             $lockContent = @file_get_contents($lock);
             if ($lockContent === false) {
@@ -127,7 +127,7 @@ final class FindReposAction
 
     public static function hasPackageInLock(string $repoPath, string $package): bool
     {
-        $lock = $repoPath . '/composer.lock';
+        $lock = $repoPath.'/composer.lock';
         if (! is_file($lock)) {
             return false;
         }
@@ -164,8 +164,8 @@ final class FindReposAction
         $repos = [];
 
         $walk = function (string $dir, int $depth) use (&$walk, &$repos, $skip, $maxDepth): void {
-            if (is_file($dir . '/composer.lock')) {
-                if (file_exists($dir . '/.git') && ! self::isCraftPluginRepo($dir)) {
+            if (is_file($dir.'/composer.lock')) {
+                if (file_exists($dir.'/.git') && ! self::isCraftPluginRepo($dir)) {
                     $repos[] = $dir;
                 }
 
@@ -176,7 +176,7 @@ final class FindReposAction
                 return;
             }
 
-            $children = glob($dir . '/*', GLOB_ONLYDIR) ?: [];
+            $children = glob($dir.'/*', GLOB_ONLYDIR) ?: [];
             foreach ($children as $child) {
                 $name = basename($child);
                 if ($name === '' || $name[0] === '.' || in_array($name, $skip, true)) {
@@ -198,7 +198,7 @@ final class FindReposAction
      */
     private static function isCraftPluginRepo(string $dir): bool
     {
-        $composerJson = $dir . '/composer.json';
+        $composerJson = $dir.'/composer.json';
         if (! is_file($composerJson)) {
             return false;
         }
@@ -227,7 +227,7 @@ final class FindReposAction
      */
     public static function requireType(string $repoPath, string $package): ?string
     {
-        $composerJson = $repoPath . '/composer.json';
+        $composerJson = $repoPath.'/composer.json';
         if (! is_file($composerJson)) {
             return null;
         }
@@ -258,14 +258,14 @@ final class FindReposAction
      * in order to bump a transitive $package).
      *
      * @param  list<array{path: string, version: string, isDirect: bool}>  $matches
-     * @return list<array{name: string, repoCount: int}>  sorted by frequency desc
+     * @return list<array{name: string, repoCount: int}> sorted by frequency desc
      */
     public static function findParentCandidates(array $matches, string $package): array
     {
         $counts = [];
 
         foreach ($matches as $match) {
-            $lock = $match['path'] . '/composer.lock';
+            $lock = $match['path'].'/composer.lock';
             if (! is_file($lock)) {
                 continue;
             }

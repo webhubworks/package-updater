@@ -3,7 +3,7 @@
 use App\Actions\UpdateRepoAction;
 
 test('parses the Performing N updates block from craft output', function () {
-    $output = <<<TXT
+    $output = <<<'TXT'
 Fetching available updates ... done
 Performing 3 updates:
 
@@ -23,7 +23,7 @@ TXT;
 });
 
 test('parses a single-update block', function () {
-    $output = <<<TXT
+    $output = <<<'TXT'
 Performing 1 update:
 
     - commerce 4.5.0 => 4.6.0
@@ -37,7 +37,7 @@ TXT;
 });
 
 test('parses craft\'s English-word count header ("Performing one update:")', function () {
-    $output = <<<TXT
+    $output = <<<'TXT'
 Performing one update:
     - craft 4.17.15 => 4.18.0
 Skipping database backup.
@@ -61,7 +61,7 @@ test('returns empty list when no block is present', function () {
 });
 
 test('ignores composer Upgrading lines that follow the block', function () {
-    $output = <<<TXT
+    $output = <<<'TXT'
 Performing 1 update:
 
     - craft 5.9.22 => 5.10.1

@@ -17,14 +17,16 @@ class RetryCommand extends Command
     {
         $data = LastRunStore::load();
         if ($data === null) {
-            $this->error('No previous run found at ' . LastRunStore::path() . '. Run `update:all` or `update:craft` first.');
+            $this->error('No previous run found at '.LastRunStore::path().'. Run `update:all` or `update:craft` first.');
+
             return self::FAILURE;
         }
 
         try {
             $target = $this->getApplication()->find($data['command']);
         } catch (\Throwable $e) {
-            $this->error("Stored command `{$data['command']}` is not registered: " . $e->getMessage());
+            $this->error("Stored command `{$data['command']}` is not registered: ".$e->getMessage());
+
             return self::FAILURE;
         }
         $allowedOptions = array_keys($target->getDefinition()->getOptions());
@@ -37,7 +39,7 @@ class RetryCommand extends Command
             if (! in_array($name, $allowedOptions, true)) {
                 continue;
             }
-            $params['--' . $name] = $value;
+            $params['--'.$name] = $value;
         }
 
         info(sprintf(

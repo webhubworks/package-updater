@@ -23,7 +23,8 @@ class OpenCommand extends Command
     {
         $data = LastRunStore::loadResults();
         if ($data === null) {
-            $this->error('No previous results found at ' . LastRunStore::resultsPath() . '. Run `update` or `update:craft` first.');
+            $this->error('No previous results found at '.LastRunStore::resultsPath().'. Run `update` or `update:craft` first.');
+
             return self::FAILURE;
         }
 
@@ -39,6 +40,7 @@ class OpenCommand extends Command
 
         if (empty($pool)) {
             info('No matching repos to open.');
+
             return self::SUCCESS;
         }
 
@@ -47,7 +49,7 @@ class OpenCommand extends Command
         } else {
             $options = [];
             foreach ($pool as $r) {
-                $options[$r->repoPath] = basename($r->repoPath) . self::badge($r);
+                $options[$r->repoPath] = basename($r->repoPath).self::badge($r);
             }
             $selected = multiselect(
                 label: sprintf('Open %d repo(s) in GitKraken?', count($pool)),
@@ -103,6 +105,6 @@ class OpenCommand extends Command
             $tags[] = '5xx';
         }
 
-        return $tags ? ' [' . implode(', ', $tags) . ']' : '';
+        return $tags ? ' ['.implode(', ', $tags).']' : '';
     }
 }

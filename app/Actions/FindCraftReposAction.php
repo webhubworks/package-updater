@@ -20,13 +20,13 @@ final class FindCraftReposAction
         $matches = [];
 
         foreach (FindReposAction::collectRepoDirs(rtrim($reposDir, '/')) as $dir) {
-            $lockData = self::readJson($dir . '/composer.lock');
+            $lockData = self::readJson($dir.'/composer.lock');
             if (! is_array($lockData)) {
                 continue;
             }
 
             if ($isCraftScope) {
-                $composerData = self::readJson($dir . '/composer.json');
+                $composerData = self::readJson($dir.'/composer.json');
                 if (! is_array($composerData)) {
                     continue;
                 }

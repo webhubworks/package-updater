@@ -3,7 +3,7 @@
 use App\Actions\FindReposAction;
 
 beforeEach(function () {
-    $this->root = sys_get_temp_dir() . '/pu-remove-' . uniqid();
+    $this->root = sys_get_temp_dir().'/pu-remove-'.uniqid();
     mkdir($this->root, 0755, true);
 });
 
@@ -14,7 +14,7 @@ afterEach(function () {
                 if ($entry === '.' || $entry === '..') {
                     continue;
                 }
-                $path = $dir . '/' . $entry;
+                $path = $dir.'/'.$entry;
                 is_dir($path) ? $rrmdir($path) : unlink($path);
             }
             rmdir($dir);
@@ -25,16 +25,16 @@ afterEach(function () {
 
 function makeRemoveRepo(string $root, string $name, array $require = [], array $requireDev = [], array $extraLockPackages = []): string
 {
-    $repo = $root . '/' . $name;
-    mkdir($repo . '/.git', 0755, true);
-    $composer = ['name' => 'acme/' . $name];
+    $repo = $root.'/'.$name;
+    mkdir($repo.'/.git', 0755, true);
+    $composer = ['name' => 'acme/'.$name];
     if (! empty($require)) {
         $composer['require'] = $require;
     }
     if (! empty($requireDev)) {
         $composer['require-dev'] = $requireDev;
     }
-    file_put_contents($repo . '/composer.json', json_encode($composer));
+    file_put_contents($repo.'/composer.json', json_encode($composer));
 
     $lockPackages = [];
     foreach ($require as $pkg => $_) {
@@ -47,7 +47,7 @@ function makeRemoveRepo(string $root, string $name, array $require = [], array $
     foreach ($requireDev as $pkg => $_) {
         $lockPackagesDev[] = ['name' => $pkg, 'version' => '1.0.0'];
     }
-    file_put_contents($repo . '/composer.lock', json_encode([
+    file_put_contents($repo.'/composer.lock', json_encode([
         'packages' => $lockPackages,
         'packages-dev' => $lockPackagesDev,
     ]));
