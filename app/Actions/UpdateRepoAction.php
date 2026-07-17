@@ -564,12 +564,18 @@ final class UpdateRepoAction
     /**
      * Run `composer outdated --format=json`, filter the result by the given
      * fnmatch patterns (e.g. `webhubworks/*`), then `composer update -W` the
-     * matches in one call. When at least one package was bumped, re-run
+     * matches in one call. When the update actually changed the lock, re-run
      * `migrate/all` + `project-config/apply` so DB/config catch up with code.
      *
-     * Returns the list of `{name, from, to, origin}` updates (origin=sweep) on
-     * success, an empty list when nothing matched, or a failure
-     * RepoUpdateResult to short-circuit doUpdate.
+     * `composer outdated` advertises the absolute latest version even when a
+     * constraint pins the package below it, so the update can be a no-op. We
+     * compare composer.lock before/after and report only the packages that
+     * actually moved (with their real installed version) — never the phantom
+     * "latest" that never installed.
+     *
+     * Returns the list of `{name, from, to, origin}` updates (origin=sweep) that
+     * actually landed, an empty list when nothing matched or nothing moved, or a
+     * failure RepoUpdateResult to short-circuit doUpdate.
      *
      * @param  list<string>  $patterns
      * @param  callable(string, ?string, ?string): void|null  $onProgress
@@ -592,12 +598,14 @@ final class UpdateRepoAction
             return self::fail($repoPath, $branch, 'ddev composer outdated', $outdated);
         }
 
-        $matches = self::filterOutdatedByPatterns($outdated->getOutput(), $patterns);
-        if (empty($matches)) {
+        $candidates = self::filterOutdatedByPatterns($outdated->getOutput(), $patterns);
+        if (empty($candidates)) {
             return [];
         }
 
-        $names = array_map(fn (array $m) => $m['name'], $matches);
+        $names = array_map(fn (array $m) => $m['name'], $candidates);
+        $lockBefore = @file_get_contents($repoPath.'/composer.lock');
+
         $updateCmd = ['ddev', 'composer', 'update', '--no-audit', '--no-interaction', '-W', ...$names];
         $update = self::run(
             $updateCmd,
@@ -610,6 +618,23 @@ final class UpdateRepoAction
             return self::fail($repoPath, $branch, 'ddev composer update (sweep)', $update);
         }
 
+        // `composer outdated` advertises the absolute latest version even when a
+        // composer.json constraint pins the package below it (e.g. a new major).
+        // In that case `composer update` moves nothing and the lock is untouched
+        // — so there is nothing to migrate, apply, or commit. Bail before we
+        // report a phantom "update" that never installed.
+        $lockAfter = @file_get_contents($repoPath.'/composer.lock');
+        if ($lockBefore === $lockAfter) {
+            return [];
+        }
+
+        // Report what actually landed in the lock, not what `outdated` claimed.
+        $installedAfter = [];
+        foreach ($names as $name) {
+            $installedAfter[$name] = self::lockedVersion($repoPath, $name);
+        }
+        $changes = self::resolveSweepChanges($candidates, $installedAfter);
+
         $postSteps = [
             [['ddev', 'php', 'craft', 'migrate/all'], 'ddev php craft migrate/all (post-sweep)'],
             [['ddev', 'php', 'craft', 'project-config/apply'], 'ddev php craft project-config/apply (post-sweep)'],
@@ -621,7 +646,37 @@ final class UpdateRepoAction
             }
         }
 
-        return $matches;
+        return $changes;
+    }
+
+    /**
+     * Reduce the sweep candidates (from `composer outdated`) to the packages
+     * that actually moved, using their real installed version after the update
+     * rather than the latest version `outdated` advertised. A candidate whose
+     * constraint blocked the advertised version — so its installed version is
+     * unchanged — is dropped, which keeps phantom "updates" out of the commit
+     * body and the run summary.
+     *
+     * @param  list<array{name: string, from: string, to: string, origin: string}>  $candidates
+     * @param  array<string, ?string>  $installedAfter  package name => version in the lock after the update
+     * @return list<array{name: string, from: string, to: string, origin: string}>
+     */
+    public static function resolveSweepChanges(array $candidates, array $installedAfter): array
+    {
+        $changes = [];
+        foreach ($candidates as $candidate) {
+            $to = $installedAfter[$candidate['name']] ?? null;
+            if ($to !== null && $to !== $candidate['from']) {
+                $changes[] = [
+                    'name' => $candidate['name'],
+                    'from' => $candidate['from'],
+                    'to' => $to,
+                    'origin' => 'sweep',
+                ];
+            }
+        }
+
+        return $changes;
     }
 
     /**
