@@ -149,6 +149,19 @@ final class UpdateRepoAction
             $wasReset = true;
         }
 
+        // Refresh the remote-tracking refs before choosing a branch. A repo
+        // that was cloned (or last fetched) before `develop` was created has no
+        // local trace of it, so pickBranch() would fall through to `main` and
+        // the whole update would land on the wrong branch. --prune drops refs
+        // for branches that no longer exist on origin, so a stale ref can't win
+        // either. A failed fetch is fatal on purpose: without current refs the
+        // branch choice is a guess, and the `git pull` two steps down would hit
+        // the same unreachable remote anyway.
+        $fetch = self::run(['git', 'fetch', '--prune', 'origin'], $repoPath, 300, $onProgress, 'git fetch --prune origin', stream: false);
+        if (! $fetch->isSuccessful()) {
+            return self::fail($repoPath, null, 'git fetch --prune origin', $fetch);
+        }
+
         $branch = self::pickBranch($repoPath);
         if ($branch === null) {
             return RepoUpdateResult::failed($repoPath, 'no develop/staging/main/master branch found');
@@ -1463,9 +1476,9 @@ final class UpdateRepoAction
      * commit on a stale tree and silently drop whatever already lives upstream,
      * so we abort and tell the user which branch is ahead and by how much.
      *
-     * We fetch first so the remote-tracking refs reflect what teammates pushed,
-     * then compare HEAD against both the local and origin ref of each higher
-     * candidate (whichever is further ahead wins). Returns a failed
+     * The remote-tracking refs were refreshed by the fetch that precedes the
+     * checkout, so we compare HEAD against both the local and origin ref of
+     * each higher candidate (whichever is further ahead wins). Returns a failed
      * RepoUpdateResult when a higher branch is ahead, or null when the branch is
      * current with — or ahead of — every higher branch.
      *
@@ -1477,12 +1490,6 @@ final class UpdateRepoAction
         if ($higher === []) {
             return null;
         }
-
-        // Refresh remote-tracking refs so a branch pushed elsewhere (the common
-        // "dev works on main" case) is visible. Best-effort: an offline or
-        // failed fetch just means we compare against whatever refs we already
-        // have — the earlier `git pull` proves origin is reachable anyway.
-        self::run(['git', 'fetch', 'origin'], $repoPath, 300, $onProgress, 'git fetch origin', stream: false);
 
         $ahead = [];
         foreach ($higher as $candidate) {

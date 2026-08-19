@@ -1,12 +1,14 @@
 # package-updater
 
 A Laravel Zero CLI for bulk-updating Composer packages — and Craft itself /
-Craft plugins — across every repo on your machine. Runs `git pull` on the
-appropriate long-lived branch (`develop` → `dev` → `staging` → `stag` →
-`stage` → `main` → `master` → `prod` → `live`), then the package update,
-optional `composer prep`, optional `site-crawler`. Skips dirty repos,
-captures full per-repo transcripts, summarises everything, and offers to
-open repos with uncommitted changes in GitKraken for review.
+Craft plugins — across every repo on your machine. Fetches from `origin`,
+then runs `git pull` on the appropriate long-lived branch (`develop` →
+`dev` → `staging` → `stag` → `stage` → `main` → `master` → `prod` →
+`live`), picking it up even when it only exists on the remote so far.
+After the pull come the package update, optional `composer prep`, and
+optional `site-crawler`. Skips dirty repos, captures full per-repo
+transcripts, summarises everything, and offers to open repos with
+uncommitted changes in GitKraken for review.
 
 ## 1. Installation
 
@@ -66,13 +68,13 @@ those packages. Use `--no-ddev` to force host composer, `--commit` /
 Universal bulk update — one composer package across every local repo
 that depends on it. Pick a `vendor/name`, pick a target version, pick
 which of the matching repos to run on, pick parallelism, confirm. Each
-repo runs `git pull` → `ddev start` → `ddev composer update` →
-`composer prep` (if defined) → `ddev stop` (optional). After checking out
-the lowest long-lived branch, the run fetches and aborts the repo if a
-higher branch (e.g. `main`/`master` a teammate committed to directly) is
-ahead of it — updating a stale branch would base the commit on the wrong
-tree, so it's left for you to merge down first. Repos already at
-the target version are pre-skipped; with a bare target version, repos
+repo runs `git fetch --prune` → `git pull` → `ddev start` →
+`ddev composer update` → `composer prep` (if defined) → `ddev stop`
+(optional). After checking out the lowest long-lived branch, the run
+aborts the repo if a higher branch (e.g. `main`/`master` a teammate
+committed to directly) is ahead of it — updating a stale branch would
+base the commit on the wrong tree, so it's left for you to merge down
+first. Repos already at the target version are pre-skipped; with a bare target version, repos
 on a different major are pre-skipped too (prefix the version with `!`
 to force across majors).
 
