@@ -1,6 +1,6 @@
 <?php
 
-use App\Actions\UpdateRepoAction;
+use PackageUpdater\Actions\UpdateRepoAction;
 
 test('parses the Performing N updates block from craft output', function () {
     $output = <<<'TXT'

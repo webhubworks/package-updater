@@ -1,14 +1,14 @@
 <?php
 
-namespace App\Commands;
+namespace PackageUpdater\Commands;
 
-use App\Actions\BuildMaintenanceSlackMessage;
-use App\Actions\FindCraftReposAction;
-use App\Actions\LastRunStore;
-use App\Actions\UpdateRepoAction;
-use App\DataTransferObjects\RepoUpdateResult;
-use App\Support\SlackNotifier;
-use App\Support\UserConfig;
+use PackageUpdater\Actions\BuildMaintenanceSlackMessage;
+use PackageUpdater\Actions\FindCraftReposAction;
+use PackageUpdater\Actions\LastRunStore;
+use PackageUpdater\Actions\UpdateRepoAction;
+use PackageUpdater\DataTransferObjects\RepoUpdateResult;
+use PackageUpdater\Support\SlackNotifier;
+use PackageUpdater\Support\UserConfig;
 
 use function Laravel\Prompts\info;
 use function Laravel\Prompts\multiselect;

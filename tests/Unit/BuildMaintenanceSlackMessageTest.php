@@ -1,7 +1,7 @@
 <?php
 
-use App\Actions\BuildMaintenanceSlackMessage;
-use App\DataTransferObjects\RepoUpdateResult;
+use PackageUpdater\Actions\BuildMaintenanceSlackMessage;
+use PackageUpdater\DataTransferObjects\RepoUpdateResult;
 
 /** Collect every mrkdwn/plain_text string in the payload's blocks. */
 function blockTexts(array $payload): string

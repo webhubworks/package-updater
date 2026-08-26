@@ -1,6 +1,6 @@
 <?php
 
-use App\Actions\FindReposAction;
+use PackageUpdater\Actions\FindReposAction;
 
 beforeEach(function () {
     $this->root = sys_get_temp_dir().'/pu-find-'.uniqid();

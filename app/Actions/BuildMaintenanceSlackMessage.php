@@ -1,8 +1,8 @@
 <?php
 
-namespace App\Actions;
+namespace PackageUpdater\Actions;
 
-use App\DataTransferObjects\RepoUpdateResult;
+use PackageUpdater\DataTransferObjects\RepoUpdateResult;
 
 /**
  * Turns a finished `update:craft --maintenance` run into a Slack Block Kit

@@ -1,6 +1,6 @@
 <?php
 
-namespace App\DataTransferObjects;
+namespace PackageUpdater\DataTransferObjects;
 
 final readonly class RepoUpdateResult
 {

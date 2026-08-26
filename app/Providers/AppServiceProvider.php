@@ -1,9 +1,9 @@
 <?php
 
-namespace App\Providers;
+namespace PackageUpdater\Providers;
 
-use App\Support\UserConfig;
 use Illuminate\Support\ServiceProvider;
+use PackageUpdater\Support\UserConfig;
 
 class AppServiceProvider extends ServiceProvider
 {

@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Support;
+namespace PackageUpdater\Support;
 
 /**
  * Persists user-level settings (currently just the repos directory) to a

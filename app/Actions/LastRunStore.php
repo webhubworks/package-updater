@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Actions;
+namespace PackageUpdater\Actions;
 
 final class LastRunStore
 {

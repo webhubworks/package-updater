@@ -1,10 +1,10 @@
 <?php
 
-namespace App\Commands;
+namespace PackageUpdater\Commands;
 
-use App\Actions\UpdateRepoAction;
-use App\Support\ChildProgressEmitter;
 use LaravelZero\Framework\Commands\Command;
+use PackageUpdater\Actions\UpdateRepoAction;
+use PackageUpdater\Support\ChildProgressEmitter;
 
 class UpdateSingleCommand extends Command
 {

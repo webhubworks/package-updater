@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Support;
+namespace PackageUpdater\Support;
 
 use Closure;
 use Symfony\Component\Console\Output\OutputInterface;

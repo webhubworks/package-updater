@@ -1,6 +1,6 @@
 <?php
 
-use App\Actions\UpdateRepoAction;
+use PackageUpdater\Actions\UpdateRepoAction;
 
 it('pairs each FAILED test with its file location', function () {
     $output = <<<TXT

@@ -1,14 +1,14 @@
 <?php
 
-namespace App\Commands;
+namespace PackageUpdater\Commands;
 
-use App\Actions\FindReposAction;
-use App\Actions\LastRunStore;
-use App\Actions\UpdateRepoAction;
-use App\Concerns\ResolvesReposDir;
-use App\Concerns\RunsBulkRepoTasks;
-use App\DataTransferObjects\RepoUpdateResult;
 use LaravelZero\Framework\Commands\Command;
+use PackageUpdater\Actions\FindReposAction;
+use PackageUpdater\Actions\LastRunStore;
+use PackageUpdater\Actions\UpdateRepoAction;
+use PackageUpdater\Concerns\ResolvesReposDir;
+use PackageUpdater\Concerns\RunsBulkRepoTasks;
+use PackageUpdater\DataTransferObjects\RepoUpdateResult;
 
 use function Laravel\Prompts\confirm;
 use function Laravel\Prompts\info;

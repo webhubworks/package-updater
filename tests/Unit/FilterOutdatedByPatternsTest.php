@@ -1,6 +1,6 @@
 <?php
 
-use App\Actions\UpdateRepoAction;
+use PackageUpdater\Actions\UpdateRepoAction;
 
 test('matches a single fnmatch pattern', function () {
     $json = json_encode(['installed' => [

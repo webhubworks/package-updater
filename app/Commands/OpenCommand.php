@@ -1,11 +1,11 @@
 <?php
 
-namespace App\Commands;
+namespace PackageUpdater\Commands;
 
-use App\Actions\LastRunStore;
-use App\Actions\OpenInGitKrakenAction;
-use App\DataTransferObjects\RepoUpdateResult;
 use LaravelZero\Framework\Commands\Command;
+use PackageUpdater\Actions\LastRunStore;
+use PackageUpdater\Actions\OpenInGitKrakenAction;
+use PackageUpdater\DataTransferObjects\RepoUpdateResult;
 
 use function Laravel\Prompts\info;
 use function Laravel\Prompts\multiselect;

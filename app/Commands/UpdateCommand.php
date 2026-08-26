@@ -1,10 +1,10 @@
 <?php
 
-namespace App\Commands;
+namespace PackageUpdater\Commands;
 
-use App\Actions\FindCraftReposAction;
-use App\Actions\UpdateRepoAction;
 use LaravelZero\Framework\Commands\Command;
+use PackageUpdater\Actions\FindCraftReposAction;
+use PackageUpdater\Actions\UpdateRepoAction;
 use Symfony\Component\Console\Formatter\OutputFormatter;
 use Symfony\Component\Console\Terminal;
 use Symfony\Component\Process\Process;

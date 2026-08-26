@@ -1,6 +1,6 @@
 <?php
 
-use App\Support\UserConfig;
+use PackageUpdater\Support\UserConfig;
 
 beforeEach(function () {
     $this->configHome = sys_get_temp_dir().'/pu-config-test-'.uniqid();

@@ -1,6 +1,6 @@
 <?php
 
-use App\Actions\UpdateRepoAction;
+use PackageUpdater\Actions\UpdateRepoAction;
 
 /** Shape a `composer outdated` candidate as filterOutdatedByPatterns returns it. */
 function candidate(string $name, string $from, string $to): array

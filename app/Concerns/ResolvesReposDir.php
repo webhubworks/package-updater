@@ -1,8 +1,8 @@
 <?php
 
-namespace App\Concerns;
+namespace PackageUpdater\Concerns;
 
-use App\Support\UserConfig;
+use PackageUpdater\Support\UserConfig;
 
 use function Laravel\Prompts\info;
 

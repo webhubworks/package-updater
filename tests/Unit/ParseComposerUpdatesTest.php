@@ -1,6 +1,6 @@
 <?php
 
-use App\Actions\UpdateRepoAction;
+use PackageUpdater\Actions\UpdateRepoAction;
 
 test('reads only the Lock file operations block, not Package operations', function () {
     // Simulates a repo whose composer.lock was already ahead of its installed

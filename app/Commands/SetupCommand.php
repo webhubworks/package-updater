@@ -1,9 +1,9 @@
 <?php
 
-namespace App\Commands;
+namespace PackageUpdater\Commands;
 
-use App\Support\UserConfig;
 use LaravelZero\Framework\Commands\Command;
+use PackageUpdater\Support\UserConfig;
 
 use function Laravel\Prompts\info;
 use function Laravel\Prompts\note;

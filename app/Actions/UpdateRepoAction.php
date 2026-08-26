@@ -1,8 +1,8 @@
 <?php
 
-namespace App\Actions;
+namespace PackageUpdater\Actions;
 
-use App\DataTransferObjects\RepoUpdateResult;
+use PackageUpdater\DataTransferObjects\RepoUpdateResult;
 use Symfony\Component\Process\Process;
 
 final class UpdateRepoAction

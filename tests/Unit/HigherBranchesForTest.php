@@ -1,6 +1,6 @@
 <?php
 
-use App\Actions\UpdateRepoAction;
+use PackageUpdater\Actions\UpdateRepoAction;
 
 test('develop sees every higher tier as a higher branch', function () {
     expect(UpdateRepoAction::higherBranchesFor('develop'))->toBe([

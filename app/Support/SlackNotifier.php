@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Support;
+namespace PackageUpdater\Support;
 
 /**
  * Posts a Block Kit payload to a Slack incoming webhook. Prefers cURL when the

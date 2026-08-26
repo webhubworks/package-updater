@@ -1,6 +1,6 @@
 <?php
 
-use App\Actions\UpdateRepoAction;
+use PackageUpdater\Actions\UpdateRepoAction;
 
 test('detects a corrupt/0-byte dist zip as transient', function () {
     $output = <<<'TXT'

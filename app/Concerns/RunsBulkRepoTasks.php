@@ -1,12 +1,12 @@
 <?php
 
-namespace App\Concerns;
+namespace PackageUpdater\Concerns;
 
-use App\Actions\OpenInGitKrakenAction;
-use App\Commands\OpenCommand;
-use App\DataTransferObjects\RepoUpdateResult;
 use Closure;
 use Illuminate\Console\OutputStyle;
+use PackageUpdater\Actions\OpenInGitKrakenAction;
+use PackageUpdater\Commands\OpenCommand;
+use PackageUpdater\DataTransferObjects\RepoUpdateResult;
 use Symfony\Component\Console\Formatter\OutputFormatter;
 use Symfony\Component\Console\Output\ConsoleOutputInterface;
 use Symfony\Component\Console\Output\OutputInterface;

@@ -1,6 +1,6 @@
 <?php
 
-use App\Actions\UpdateRepoAction;
+use PackageUpdater\Actions\UpdateRepoAction;
 use Symfony\Component\Process\Process;
 
 /** Run a git (or shell) command in $cwd and fail the test if it errors. */

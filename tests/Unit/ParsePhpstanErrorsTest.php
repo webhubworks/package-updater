@@ -1,6 +1,6 @@
 <?php
 
-use App\Actions\UpdateRepoAction;
+use PackageUpdater\Actions\UpdateRepoAction;
 
 it('parses the [ERROR] Found N errors line', function () {
     $output = <<<'TXT'

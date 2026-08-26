@@ -1,6 +1,6 @@
 <?php
 
-use App\Actions\UpdateRepoAction;
+use PackageUpdater\Actions\UpdateRepoAction;
 
 it('pairs a swallowed step failure with its command and error excerpt', function () {
     // Mirrors webhub's prep script: each step is announced with "> Running:",

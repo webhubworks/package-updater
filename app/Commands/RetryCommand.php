@@ -1,9 +1,9 @@
 <?php
 
-namespace App\Commands;
+namespace PackageUpdater\Commands;
 
-use App\Actions\LastRunStore;
 use LaravelZero\Framework\Commands\Command;
+use PackageUpdater\Actions\LastRunStore;
 
 use function Laravel\Prompts\info;
 
