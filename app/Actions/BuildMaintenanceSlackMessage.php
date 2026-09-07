@@ -3,6 +3,7 @@
 namespace PackageUpdater\Actions;
 
 use PackageUpdater\DataTransferObjects\RepoUpdateResult;
+use PackageUpdater\Support\RepoName;
 
 /**
  * Turns a finished `update:craft --maintenance` run into a Slack Block Kit
@@ -50,7 +51,7 @@ final class BuildMaintenanceSlackMessage
         $upToDate = 0;
 
         foreach ($results as $r) {
-            $name = basename($r->repoPath);
+            $name = RepoName::for($r->repoPath);
 
             if ($r->status === 'failed') {
                 $failed[] = sprintf('• *%s* - %s', $name, self::firstLine($r->message));

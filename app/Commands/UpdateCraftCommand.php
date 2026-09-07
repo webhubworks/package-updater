@@ -7,6 +7,7 @@ use PackageUpdater\Actions\FindCraftReposAction;
 use PackageUpdater\Actions\LastRunStore;
 use PackageUpdater\Actions\UpdateRepoAction;
 use PackageUpdater\DataTransferObjects\RepoUpdateResult;
+use PackageUpdater\Support\RepoName;
 use PackageUpdater\Support\SlackNotifier;
 use PackageUpdater\Support\UserConfig;
 
@@ -112,7 +113,7 @@ class UpdateCraftCommand extends UpdateAllCommand
         if ($this->option('dry-run')) {
             table(
                 ['Repo', 'Package', 'Locked version'],
-                array_map(fn ($m) => [basename($m['path']), $m['package'], $m['version']], $matches),
+                array_map(fn ($m) => [RepoName::for($m['path']), $m['package'], $m['version']], $matches),
             );
             note('Dry run — no changes were made. Note: versions reflect each repo\'s current local composer.lock and may be stale.');
 
@@ -358,7 +359,7 @@ class UpdateCraftCommand extends UpdateAllCommand
 
         $options = [];
         foreach ($matches as $m) {
-            $options[$m['path']] = basename($m['path']);
+            $options[$m['path']] = RepoName::for($m['path']);
         }
 
         $selected = multiselect(

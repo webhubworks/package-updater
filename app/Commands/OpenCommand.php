@@ -6,6 +6,7 @@ use LaravelZero\Framework\Commands\Command;
 use PackageUpdater\Actions\LastRunStore;
 use PackageUpdater\Actions\OpenInGitKrakenAction;
 use PackageUpdater\DataTransferObjects\RepoUpdateResult;
+use PackageUpdater\Support\RepoName;
 
 use function Laravel\Prompts\info;
 use function Laravel\Prompts\multiselect;
@@ -49,7 +50,7 @@ class OpenCommand extends Command
         } else {
             $options = [];
             foreach ($pool as $r) {
-                $options[$r->repoPath] = basename($r->repoPath).self::badge($r);
+                $options[$r->repoPath] = RepoName::for($r->repoPath).self::badge($r);
             }
             $selected = multiselect(
                 label: sprintf('Open %d repo(s) in GitKraken?', count($pool)),

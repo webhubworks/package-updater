@@ -9,6 +9,7 @@ use PackageUpdater\Actions\UpdateRepoAction;
 use PackageUpdater\Concerns\ResolvesReposDir;
 use PackageUpdater\Concerns\RunsBulkRepoTasks;
 use PackageUpdater\DataTransferObjects\RepoUpdateResult;
+use PackageUpdater\Support\RepoName;
 
 use function Laravel\Prompts\confirm;
 use function Laravel\Prompts\info;
@@ -112,7 +113,7 @@ class RemoveCommand extends Command
             foreach ($plans as $plan) {
                 foreach ($plan['spec'] as $entry) {
                     $rows[] = [
-                        basename($plan['path']),
+                        RepoName::for($plan['path']),
                         $entry['name'],
                         $entry['dev'] ? 'require-dev' : 'require',
                     ];
@@ -276,7 +277,7 @@ class RemoveCommand extends Command
         $options = [];
         foreach ($plans as $p) {
             $names = array_map(fn ($e) => $e['name'].($e['dev'] ? ' [dev]' : ''), $p['spec']);
-            $options[$p['path']] = basename($p['path']).' ('.implode(', ', $names).')';
+            $options[$p['path']] = RepoName::for($p['path']).' ('.implode(', ', $names).')';
         }
 
         $selected = multiselect(
@@ -312,7 +313,7 @@ class RemoveCommand extends Command
             table(
                 ['Repo', 'Branch', 'Tests', 'Note'],
                 array_map(fn (RepoUpdateResult $r) => [
-                    basename($r->repoPath),
+                    RepoName::for($r->repoPath),
                     $r->branch ?? '-',
                     self::testsCell($r),
                     self::successNote($r),
@@ -324,14 +325,14 @@ class RemoveCommand extends Command
             note('Skipped repos:');
             table(
                 ['Repo', 'Reason'],
-                array_map(fn ($r) => [basename($r->repoPath), $r->message], $skipped),
+                array_map(fn ($r) => [RepoName::for($r->repoPath), $r->message], $skipped),
             );
         }
 
         if (! empty($failed)) {
             warning('Failed repos:');
             foreach ($failed as $r) {
-                $name = basename($r->repoPath);
+                $name = RepoName::for($r->repoPath);
                 $branch = $r->branch ?? '-';
                 $this->newLine();
                 $this->line("  <fg=red;options=bold>✗ {$name}</> <fg=gray>({$branch})</>");

@@ -7,6 +7,7 @@ use Illuminate\Console\OutputStyle;
 use PackageUpdater\Actions\OpenInGitKrakenAction;
 use PackageUpdater\Commands\OpenCommand;
 use PackageUpdater\DataTransferObjects\RepoUpdateResult;
+use PackageUpdater\Support\RepoName;
 use Symfony\Component\Console\Formatter\OutputFormatter;
 use Symfony\Component\Console\Output\ConsoleOutputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
@@ -53,7 +54,7 @@ trait RunsBulkRepoTasks
         foreach ($items as $i => $item) {
             $n = $i + 1;
             $path = $pathOf($item);
-            $name = basename($path);
+            $name = RepoName::for($path);
             $this->line('');
             $this->line("<fg=cyan>━━ [{$n}/{$total}] {$name} ━━</>");
             $result = $updater($item, $this->streamingCallback());
@@ -347,7 +348,7 @@ trait RunsBulkRepoTasks
     protected function formatRunningLine(array $entry, string $spinnerFrame, int $total): string
     {
         $elapsed = (int) round(microtime(true) - $entry['started']);
-        $name = basename($entry['repo']);
+        $name = RepoName::for($entry['repo']);
 
         return sprintf(
             '  <fg=cyan>%s</> [%d/%d] %s — running (%ds)',
@@ -361,7 +362,7 @@ trait RunsBulkRepoTasks
 
     protected function formatRepoLine(RepoUpdateResult $result, int $index, int $total, ?float $elapsedSeconds = null): string
     {
-        $name = basename($result->repoPath);
+        $name = RepoName::for($result->repoPath);
         [$icon, $color] = match ($result->status) {
             'success' => ['✓', 'green'],
             'skipped' => ['↷', 'yellow'],
@@ -615,7 +616,7 @@ trait RunsBulkRepoTasks
             count($repos),
         ));
         foreach ($dirty as $entry) {
-            $name = basename($entry['repo']);
+            $name = RepoName::for($entry['repo']);
             $files = $entry['count'] === 1 ? 'file' : 'files';
             $this->line(sprintf(
                 '  <fg=yellow>!</> %s <fg=gray>(%d %s changed - %s)</>',
@@ -698,7 +699,7 @@ trait RunsBulkRepoTasks
         } else {
             $options = [];
             foreach ($candidates as $r) {
-                $options[$r->repoPath] = basename($r->repoPath).OpenCommand::badge($r);
+                $options[$r->repoPath] = RepoName::for($r->repoPath).OpenCommand::badge($r);
             }
             $selected = multiselect(
                 label: sprintf('Open %d repo(s) in GitKraken?', count($candidates)),

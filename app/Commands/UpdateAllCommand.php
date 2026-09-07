@@ -9,6 +9,7 @@ use PackageUpdater\Actions\UpdateRepoAction;
 use PackageUpdater\Concerns\ResolvesReposDir;
 use PackageUpdater\Concerns\RunsBulkRepoTasks;
 use PackageUpdater\DataTransferObjects\RepoUpdateResult;
+use PackageUpdater\Support\RepoName;
 
 use function Laravel\Prompts\confirm;
 use function Laravel\Prompts\info;
@@ -106,7 +107,7 @@ class UpdateAllCommand extends Command
                 foreach ($matches as $m) {
                     foreach ($m['matchedPackages'] ?? [] as $pkg) {
                         $rows[] = [
-                            basename($m['path']),
+                            RepoName::for($m['path']),
                             $pkg['name'],
                             $pkg['version'],
                             $pkg['isDirect'] ? 'direct' : 'transitive',
@@ -118,7 +119,7 @@ class UpdateAllCommand extends Command
                 table(
                     ['Repo', "Locked {$package} version", 'Dep type'],
                     array_map(fn ($m) => [
-                        basename($m['path']),
+                        RepoName::for($m['path']),
                         $m['version'],
                         $m['isDirect'] ? 'direct' : 'transitive',
                     ], $matches),
@@ -324,7 +325,7 @@ class UpdateAllCommand extends Command
 
         $options = [];
         foreach ($matches as $m) {
-            $label = basename($m['path']).' ('.$m['version'].')';
+            $label = RepoName::for($m['path']).' ('.$m['version'].')';
             if (isset($m['matchedPackages']) && count($m['matchedPackages']) > 1) {
                 $names = array_map(fn ($p) => $p['name'], $m['matchedPackages']);
                 $preview = array_slice($names, 0, 3);
@@ -332,7 +333,7 @@ class UpdateAllCommand extends Command
                 if (count($names) > 3) {
                     $suffix .= ', ...';
                 }
-                $label = basename($m['path']).' ('.$m['version'].': '.$suffix.')';
+                $label = RepoName::for($m['path']).' ('.$m['version'].': '.$suffix.')';
             }
             $options[$m['path']] = $label;
         }
@@ -562,7 +563,7 @@ class UpdateAllCommand extends Command
                     $to = $r->installedVersion ?? ($singlePackageTracked ? '?' : '-');
                     $note = self::successNote($r, $targetVersion);
 
-                    return [basename($r->repoPath), $r->branch ?? '-', $from, $to, self::testsCell($r), $note];
+                    return [RepoName::for($r->repoPath), $r->branch ?? '-', $from, $to, self::testsCell($r), $note];
                 }, $success),
             );
 
@@ -573,7 +574,7 @@ class UpdateAllCommand extends Command
             if (! empty($withUpdates)) {
                 note('Package updates per repo:');
                 foreach ($withUpdates as $r) {
-                    $name = basename($r->repoPath);
+                    $name = RepoName::for($r->repoPath);
                     $count = count($r->packageUpdates);
                     $marker = $r->committed
                         ? ($r->pushed ? '<fg=green>✓ committed + pushed</>' : '<fg=green>✓ committed</>')
@@ -605,7 +606,7 @@ class UpdateAllCommand extends Command
                 count($testFailures),
             ));
             foreach ($testFailures as $r) {
-                $name = basename($r->repoPath);
+                $name = RepoName::for($r->repoPath);
                 $summary = $r->testsSummary ?? 'no test summary';
                 $this->line("  <fg=red;options=bold>✗ {$name}</> — {$summary}");
                 $this->printRepoTrailer($r->prepLogPath, $r->transcriptPath);
@@ -622,7 +623,7 @@ class UpdateAllCommand extends Command
                 count($phpstanFailures),
             ));
             foreach ($phpstanFailures as $r) {
-                $name = basename($r->repoPath);
+                $name = RepoName::for($r->repoPath);
                 $count = (int) $r->phpstanErrors;
                 $label = $count === 1 ? 'error' : 'errors';
                 $this->line("  <fg=red;options=bold>✗ {$name}</> — PHPStan: {$count} {$label}");
@@ -640,7 +641,7 @@ class UpdateAllCommand extends Command
                 count($crawlerFailures),
             ));
             foreach ($crawlerFailures as $r) {
-                $name = basename($r->repoPath);
+                $name = RepoName::for($r->repoPath);
                 $this->line("  <fg=yellow;options=bold>! {$name}</> — site-crawler crawl:ddev failed");
                 $this->printRepoTrailer($r->crawlerLogPath, $r->transcriptPath);
             }
@@ -656,7 +657,7 @@ class UpdateAllCommand extends Command
                 count($crawler5xx),
             ));
             foreach ($crawler5xx as $r) {
-                $name = basename($r->repoPath);
+                $name = RepoName::for($r->repoPath);
                 $count = count($r->crawlerServerErrorUrls);
                 $this->line("  <fg=red;options=bold>✗ {$name}</> — {$count} URL(s) returned 5xx");
                 foreach ($r->crawlerServerErrorUrls as $url) {
@@ -670,7 +671,7 @@ class UpdateAllCommand extends Command
             note('Skipped repos:');
             table(
                 ['Repo', 'Reason'],
-                array_map(fn ($r) => [basename($r->repoPath), $r->message], $skipped),
+                array_map(fn ($r) => [RepoName::for($r->repoPath), $r->message], $skipped),
             );
         }
 
@@ -744,7 +745,7 @@ class UpdateAllCommand extends Command
 
     private function printFailureBlock(RepoUpdateResult $r): void
     {
-        $name = basename($r->repoPath);
+        $name = RepoName::for($r->repoPath);
         $branch = $r->branch ?? '-';
         [$step, $detail, $hint] = self::splitFailureMessage($r->message);
 
