@@ -1149,6 +1149,17 @@ final class UpdateRepoAction
      * We pair each "continuing" marker with the most recent "> Running:"
      * command and pull a short error excerpt from the lines in between.
      *
+     * Two more ways a step ends without that marker are handled as well:
+     *
+     * - The prep script kills a step that overruns its timeout and moves on to
+     *   the next one, printing "Command timed out after N seconds". There is no
+     *   exit code to swallow, so the step looks like one that merely stayed
+     *   quiet.
+     * - An uncaught PHP error takes the prep script itself down mid-step, which
+     *   skips every step still to come. A test step that dies this way costs
+     *   both the test summary and the static analysis that would have followed
+     *   it.
+     *
      * @return list<array{command: string, error: ?string}>
      */
     public static function parsePrepStepFailures(string $output): array
@@ -1158,6 +1169,7 @@ final class UpdateRepoAction
 
         $failures = [];
         $currentCommand = null;
+        $lastCommand = null;
         $block = [];
 
         foreach ($lines as $line) {
@@ -1165,6 +1177,7 @@ final class UpdateRepoAction
 
             if (preg_match('/^>\s*Running:\s*(.+)$/', $trimmed, $m)) {
                 $currentCommand = trim($m[1]);
+                $lastCommand = $currentCommand;
                 $block = [];
 
                 continue;
@@ -1175,6 +1188,37 @@ final class UpdateRepoAction
                     'command' => $currentCommand ?? '(unknown step)',
                     'error' => self::prepStepError($block),
                 ];
+                $currentCommand = null;
+                $block = [];
+
+                continue;
+            }
+
+            if (preg_match('/^Command timed out after (\d+) seconds/', $trimmed, $m)) {
+                $failures[] = [
+                    'command' => $currentCommand ?? $lastCommand ?? '(unknown step)',
+                    'error' => "timed out after {$m[1]}s",
+                ];
+                $currentCommand = null;
+                $block = [];
+
+                continue;
+            }
+
+            if (preg_match('/^(?:PHP\s+)?Fatal error:\s*(.+)$/i', $trimmed, $m)) {
+                // PHP writes the same fatal to stdout and stderr, and the fatal
+                // usually follows another marker for the same step (a timeout,
+                // say), so report it only once per step.
+                $command = $currentCommand ?? $lastCommand ?? '(unknown step)';
+                $previous = $failures === [] ? null : $failures[array_key_last($failures)];
+
+                if (($previous['command'] ?? null) !== $command) {
+                    $failures[] = [
+                        'command' => $command,
+                        'error' => 'prep aborted: '.trim($m[1]),
+                    ];
+                }
+
                 $currentCommand = null;
                 $block = [];
 

@@ -261,7 +261,7 @@ class UpdateCommand extends Command
         }
 
         if ($stepFailures !== []) {
-            $this->line('  <fg=red;options=bold>✗ Prep step failed (crashed before producing a summary):</>');
+            $this->line('  <fg=red;options=bold>✗ Prep step failed (no summary produced):</>');
             foreach ($stepFailures as $failed) {
                 $this->line("    <fg=red>•</> {$failed['command']}");
                 if ($failed['error'] !== null) {
