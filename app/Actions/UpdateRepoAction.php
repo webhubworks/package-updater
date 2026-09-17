@@ -13,14 +13,13 @@ final class UpdateRepoAction
      */
     private const MaintenanceUpdateRetries = 1;
 
-    private const BranchCandidates = ['develop', 'dev', 'staging', 'stag', 'stage', 'main', 'master', 'prod', 'live'];
-
     /**
      * The long-lived branches grouped into precedence tiers, lowest first. A
      * branch is "higher" than the checked-out one when it lives in a later
      * tier. Synonyms share a tier (develop/dev, staging/stag/stage, main/master,
      * prod/live) so a second name at the same level is never mistaken for a
-     * higher branch. Flattened, this must stay in step with BranchCandidates.
+     * higher branch. Flattened (see tiersFor()), this is also the list of
+     * branches worth checking out, highest precedence first.
      *
      * @var list<list<string>>
      */
@@ -162,7 +161,15 @@ final class UpdateRepoAction
             return self::fail($repoPath, null, 'git fetch --prune origin', $fetch);
         }
 
-        $branch = self::pickBranch($repoPath);
+        // Ask origin which branch is its default. A repo that was renamed from
+        // `master` to `main` (or the other way round) usually keeps the old
+        // branch around, abandoned, and by name alone that corpse still looks
+        // like a long-lived branch. The default tells the two apart, so both
+        // the checkout below and the ahead-guard further down ignore every
+        // other name in the default's tier.
+        $defaultBranch = self::defaultBranch($repoPath);
+
+        $branch = self::pickBranch($repoPath, $defaultBranch);
         if ($branch === null) {
             return RepoUpdateResult::failed($repoPath, 'no develop/staging/main/master branch found');
         }
@@ -181,7 +188,7 @@ final class UpdateRepoAction
             return self::fail($repoPath, $branch, 'git pull', $pull);
         }
 
-        $aheadFailure = self::guardAgainstHigherBranchAhead($repoPath, $branch, $onProgress);
+        $aheadFailure = self::guardAgainstHigherBranchAhead($repoPath, $branch, $defaultBranch, $onProgress);
         if ($aheadFailure !== null) {
             return $aheadFailure;
         }
@@ -1524,22 +1531,29 @@ final class UpdateRepoAction
      * checkout, so we compare HEAD against both the local and origin ref of
      * each higher candidate (whichever is further ahead wins). Returns a failed
      * RepoUpdateResult when a higher branch is ahead, or null when the branch is
-     * current with — or ahead of — every higher branch.
+     * current with, or ahead of, every higher branch.
      *
+     * @param  string|null  $defaultBranch  origin's default branch, which wins its
+     *                                      whole tier. See higherBranchesFor().
      * @param  callable(string, ?string, ?string): void|null  $onProgress
      */
-    private static function guardAgainstHigherBranchAhead(string $repoPath, string $branch, ?callable $onProgress): ?RepoUpdateResult
+    private static function guardAgainstHigherBranchAhead(string $repoPath, string $branch, ?string $defaultBranch, ?callable $onProgress): ?RepoUpdateResult
     {
-        $higher = self::higherBranchesFor($branch);
+        $higher = self::higherBranchesFor($branch, $defaultBranch);
         if ($higher === []) {
             return null;
         }
 
         $ahead = [];
         foreach ($higher as $candidate) {
-            $count = self::commitsAhead($repoPath, $candidate);
+            ['count' => $count, 'newest' => $newest] = self::commitsAhead($repoPath, $candidate);
             if ($count > 0) {
-                $ahead[] = "{$candidate} (+{$count})";
+                // The date of the newest unmerged commit is what tells a hotfix
+                // somebody forgot to merge down from history nobody has touched
+                // in years, so it goes in the message rather than a log.
+                $ahead[] = $newest !== null
+                    ? "{$candidate} (+{$count}, newest {$newest})"
+                    : "{$candidate} (+{$count})";
             }
         }
 
@@ -1548,7 +1562,7 @@ final class UpdateRepoAction
         }
 
         $message = sprintf(
-            "aborted: '%s' is behind a higher branch — %s %s commits '%s' doesn't have. "
+            "aborted: '%s' is behind a higher branch: %s %s commits '%s' doesn't have. "
             ."A teammate likely worked on that branch directly. Merge it down into '%s' "
             .'(or run the update on that branch instead), then re-run.',
             $branch,
@@ -1567,12 +1581,19 @@ final class UpdateRepoAction
      * main/master, prod/live). Returns an empty list when the branch is already
      * the top tier or isn't a known long-lived branch.
      *
+     * @param  string|null  $defaultBranch  origin's default branch. When it names a
+     *                                      tier member, that tier collapses to it
+     *                                      alone, so an abandoned `master` left over
+     *                                      from a rename to `main` is never treated
+     *                                      as a branch worth merging down.
      * @return list<string>
      */
-    public static function higherBranchesFor(string $branch): array
+    public static function higherBranchesFor(string $branch, ?string $defaultBranch = null): array
     {
+        $tiers = self::tiersFor($defaultBranch);
+
         $tierIndex = null;
-        foreach (self::BranchTiers as $i => $tier) {
+        foreach ($tiers as $i => $tier) {
             if (in_array($branch, $tier, true)) {
                 $tierIndex = $i;
                 break;
@@ -1584,7 +1605,7 @@ final class UpdateRepoAction
         }
 
         $higher = [];
-        foreach (self::BranchTiers as $i => $tier) {
+        foreach ($tiers as $i => $tier) {
             if ($i > $tierIndex) {
                 foreach ($tier as $name) {
                     $higher[] = $name;
@@ -1596,17 +1617,76 @@ final class UpdateRepoAction
     }
 
     /**
-     * Number of commits reachable from the given candidate branch but not from
-     * HEAD — i.e. how far that branch is *ahead* of the checked-out branch. We
-     * check both the local head and the origin remote-tracking ref and take the
-     * larger count, so a branch that's ahead in either place is caught.
-     * Non-existent refs and git failures contribute 0.
+     * The precedence tiers with the default branch's tier collapsed to the
+     * default alone. `main` and `master` are one rung because a repo has one of
+     * them, but a repo that changed its mind keeps both refs forever, and the
+     * abandoned one still carries commits the live branches never took. Asking
+     * origin which is the default is the only reading of that pair that doesn't
+     * guess. A default outside the tiers (a `production-v2`, or a branch named
+     * after nothing we know) leaves them untouched.
+     *
+     * @return list<list<string>>
      */
-    private static function commitsAhead(string $repoPath, string $candidate): int
+    private static function tiersFor(?string $defaultBranch): array
+    {
+        $tiers = self::BranchTiers;
+
+        if ($defaultBranch === null) {
+            return $tiers;
+        }
+
+        foreach ($tiers as $i => $tier) {
+            if (in_array($defaultBranch, $tier, true)) {
+                $tiers[$i] = [$defaultBranch];
+                break;
+            }
+        }
+
+        return $tiers;
+    }
+
+    /**
+     * origin's default branch, without the `origin/` prefix, or null when it
+     * can't be established. `ls-remote --symref` asks the server, so it survives
+     * a default-branch rename that the local `refs/remotes/origin/HEAD` still
+     * hasn't heard about, which is exactly the situation this guards. The cached
+     * ref is only the fallback, for when the network call fails but the earlier
+     * fetch left us usable refs.
+     */
+    private static function defaultBranch(string $repoPath): ?string
+    {
+        $symref = self::run(['git', 'ls-remote', '--symref', 'origin', 'HEAD'], $repoPath, 60, null, '', stream: false);
+        if ($symref->isSuccessful() && preg_match('#^ref:\s+refs/heads/(\S+)\s+HEAD$#m', $symref->getOutput(), $matches) === 1) {
+            return $matches[1];
+        }
+
+        $cached = self::run(['git', 'symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'], $repoPath, 30, null, '', stream: false);
+        if ($cached->isSuccessful()) {
+            $name = trim($cached->getOutput());
+            if (str_starts_with($name, 'origin/')) {
+                return substr($name, strlen('origin/'));
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * How far the given candidate branch is *ahead* of the checked-out branch:
+     * the number of commits reachable from the candidate but not from HEAD,
+     * plus the date (YYYY-MM-DD) of the newest of them. We check both the local
+     * head and the origin remote-tracking ref and keep whichever is further
+     * ahead, so a branch that's ahead in either place is caught. Non-existent
+     * refs and git failures contribute 0.
+     *
+     * @return array{count: int, newest: string|null}
+     */
+    private static function commitsAhead(string $repoPath, string $candidate): array
     {
         $refs = ["refs/heads/{$candidate}", "refs/remotes/origin/{$candidate}"];
 
         $max = 0;
+        $furthest = null;
         foreach ($refs as $ref) {
             $exists = self::run(['git', 'rev-parse', '--verify', '--quiet', $ref], $repoPath, 30, null, '', stream: false);
             if (! $exists->isSuccessful()) {
@@ -1621,15 +1701,33 @@ final class UpdateRepoAction
             $count = (int) trim($revList->getOutput());
             if ($count > $max) {
                 $max = $count;
+                $furthest = $ref;
             }
         }
 
-        return $max;
+        if ($furthest === null) {
+            return ['count' => 0, 'newest' => null];
+        }
+
+        $newest = self::run(['git', 'log', '-1', '--format=%cs', "HEAD..{$furthest}"], $repoPath, 60, null, '', stream: false);
+        $date = $newest->isSuccessful() ? trim($newest->getOutput()) : '';
+
+        return ['count' => $max, 'newest' => $date !== '' ? $date : null];
     }
 
-    private static function pickBranch(string $repoPath): ?string
+    /**
+     * The first long-lived branch this repo actually has, lowest tier first, so
+     * a package update lands on `develop` when there is one and only falls
+     * through to `main` when there isn't. The default branch wins its own tier,
+     * which keeps a leftover `main` from a repo that still integrates on
+     * `master` (or the reverse) from being checked out. Null when the repo has
+     * none of them.
+     */
+    private static function pickBranch(string $repoPath, ?string $defaultBranch = null): ?string
     {
-        foreach (self::BranchCandidates as $candidate) {
+        $candidates = array_merge(...self::tiersFor($defaultBranch));
+
+        foreach ($candidates as $candidate) {
             $local = self::run(['git', 'rev-parse', '--verify', '--quiet', "refs/heads/{$candidate}"], $repoPath, 30, null, '', stream: false);
             if ($local->isSuccessful()) {
                 return $candidate;
