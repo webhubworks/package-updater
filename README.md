@@ -123,6 +123,21 @@ Craft-aware variant. Same flow, but:
   second multiselect-chosen subset of repos. Parses the crawler's
   "Failed requests" table and warns on any 5xx URLs even if the crawler
   itself exited cleanly.
+- Skips **both verification steps — `composer prep` and the crawl — for
+  any repo the run left untouched.** They're there to catch breakage the
+  run introduced, so when there was nothing to update, `git pull` brought
+  no new commits, and the working tree came out clean, the repo is
+  exactly what it was and re-running the test suite and the crawler only
+  re-confirms what already passed. The summary marks those repos
+  `prep + crawl skipped (repo unchanged)` and their Tests column reads
+  `-`. Anything that could have changed the site vetoes the skip: a
+  parsed update, a dirty working tree (which also covers an update whose
+  output we failed to parse), a moved `HEAD`, or a `--maintenance`
+  dirty-repo reset. Because a colleague's pushed commits move `HEAD`,
+  new code still gets the full tests-and-crawl treatment — what's
+  dropped is only the repeat work on repos nothing happened to. This is
+  what makes a back-to-back run over an already up-to-date set of repos
+  fast.
 
 `--filter-name=<substring>` works the same way as on `update:all`:
 restricts the match set to repos whose `composer.json` `name` contains

@@ -45,9 +45,13 @@ final class UpdateRepoAction
      *                                         instead of `ddev composer update`. $package is still
      *                                         used to track the locked version before/after.
      * @param  string|null  $crawlerCommandLine  When non-null, runs this shell command from the
-     *                                           repo after `composer prep`. A crawler failure
-     *                                           does NOT mark the repo as failed; it surfaces
-     *                                           via the crawlerFailed/crawlerLogPath fields.
+     *                                           repo after `composer prep` — unless the run left
+     *                                           the repo untouched (see repoUntouched()), which
+     *                                           skips both `composer prep` and the crawl and is
+     *                                           reported via prepSkippedUnchanged /
+     *                                           crawlerSkippedUnchanged. A crawler failure does NOT
+     *                                           mark the repo as failed; it surfaces via the
+     *                                           crawlerFailed/crawlerLogPath fields.
      * @param  bool  $commit  When true (and craft prints a "Performing N updates:" list, or in
      *                        remove mode), the action stages everything and commits with a title
      *                        that reflects what happened ("Package updates" / "Remove <pkg>").
@@ -147,6 +151,12 @@ final class UpdateRepoAction
             }
             $wasReset = true;
         }
+
+        // The commit the repo sat on before we touched it. Compared with HEAD
+        // again just before the crawler so a run that genuinely changed nothing
+        // can be told apart from one that pulled new commits or switched
+        // branch — see repoUntouched().
+        $baselineHead = self::currentHead($repoPath);
 
         // Refresh the remote-tracking refs before choosing a branch. A repo
         // that was cloned (or last fetched) before `develop` was created has no
@@ -257,38 +267,52 @@ final class UpdateRepoAction
             }
         }
 
+        // Both verification steps below — `composer prep` and the site-crawler —
+        // exist to catch something this run broke. Decided once, here, because
+        // this is the point where everything the run could have changed has
+        // happened and nothing has re-read the tree yet.
+        $repoUntouched = self::repoUntouched($repoPath, $baselineHead, $packageUpdates, $wasReset);
+
         $prepRan = false;
         $testsFailed = null;
         $testsSummary = null;
         $phpstanErrors = null;
         $prepLogPath = null;
         $prepHadFailures = false;
+        $prepSkippedUnchanged = false;
 
         if (self::hasComposerScript($repoPath, 'prep')) {
-            $prepRan = true;
-            // Prep typically invokes phpstan/pest, which buffer their output
-            // when they don't see a TTY — without a pty the streaming callback
-            // gets nothing until the run finishes. setPty makes them flush
-            // per line so the progress rows render live.
-            $prep = self::run(
-                ['ddev', 'composer', 'prep'],
-                $repoPath,
-                3600,
-                $onProgress,
-                'ddev composer prep',
-                usePty: Process::isPtySupported(),
-            );
+            if ($repoUntouched) {
+                $prepSkippedUnchanged = true;
+                if ($onProgress !== null) {
+                    $onProgress('step-start', null, 'skipping composer prep — repo unchanged (nothing updated, nothing pulled)');
+                }
+            } else {
+                $prepRan = true;
+                // Prep typically invokes phpstan/pest, which buffer their output
+                // when they don't see a TTY — without a pty the streaming callback
+                // gets nothing until the run finishes. setPty makes them flush
+                // per line so the progress rows render live.
+                $prep = self::run(
+                    ['ddev', 'composer', 'prep'],
+                    $repoPath,
+                    3600,
+                    $onProgress,
+                    'ddev composer prep',
+                    usePty: Process::isPtySupported(),
+                );
 
-            $outcome = self::summarizePrep($prep);
-            $testsFailed = $outcome['testsFailed'];
-            $testsSummary = $outcome['testsSummary'];
-            $phpstanErrors = $outcome['phpstanErrors'];
+                $outcome = self::summarizePrep($prep);
+                $testsFailed = $outcome['testsFailed'];
+                $testsSummary = $outcome['testsSummary'];
+                $phpstanErrors = $outcome['phpstanErrors'];
 
-            if ($outcome['hasFailures']) {
-                $prepHadFailures = true;
-                $prepLogPath = self::writeLog($repoPath, 'composer-prep', $prep);
-                if ($testsSummary === null) {
-                    $testsSummary = self::prepFailureSummary($outcome['prepStepFailures'], $prep);
+                if ($outcome['hasFailures']) {
+                    $prepHadFailures = true;
+                    $prepLogPath = self::writeLog($repoPath, 'composer-prep', $prep);
+                    if ($testsSummary === null) {
+                        $testsSummary = self::prepFailureSummary($outcome['prepStepFailures'], $prep);
+                    }
                 }
             }
         }
@@ -297,19 +321,27 @@ final class UpdateRepoAction
         $crawlerFailed = false;
         $crawlerLogPath = null;
         $crawlerServerErrorUrls = [];
+        $crawlerSkippedUnchanged = false;
 
         if ($crawlerCommandLine !== null && $crawlerCommandLine !== '') {
-            $crawlerRan = true;
-            $crawler = self::run($crawlerCommandLine, $repoPath, 3600, $onProgress, $crawlerCommandLine);
+            if ($repoUntouched) {
+                $crawlerSkippedUnchanged = true;
+                if ($onProgress !== null) {
+                    $onProgress('step-start', null, 'skipping site-crawler — repo unchanged (nothing updated, nothing pulled)');
+                }
+            } else {
+                $crawlerRan = true;
+                $crawler = self::run($crawlerCommandLine, $repoPath, 3600, $onProgress, $crawlerCommandLine);
 
-            $crawlerCombined = $crawler->getOutput()."\n".$crawler->getErrorOutput();
-            $crawlerServerErrorUrls = self::parseCrawlerServerErrors($crawlerCombined);
+                $crawlerCombined = $crawler->getOutput()."\n".$crawler->getErrorOutput();
+                $crawlerServerErrorUrls = self::parseCrawlerServerErrors($crawlerCombined);
 
-            if (! $crawler->isSuccessful()) {
-                $crawlerFailed = true;
-            }
-            if ($crawlerFailed || ! empty($crawlerServerErrorUrls)) {
-                $crawlerLogPath = self::writeLog($repoPath, 'site-crawler', $crawler);
+                if (! $crawler->isSuccessful()) {
+                    $crawlerFailed = true;
+                }
+                if ($crawlerFailed || ! empty($crawlerServerErrorUrls)) {
+                    $crawlerLogPath = self::writeLog($repoPath, 'site-crawler', $crawler);
+                }
             }
         }
 
@@ -371,6 +403,8 @@ final class UpdateRepoAction
             packageUpdates: $packageUpdates,
             committed: $committed,
             pushed: $pushed,
+            prepSkippedUnchanged: $prepSkippedUnchanged,
+            crawlerSkippedUnchanged: $crawlerSkippedUnchanged,
         );
     }
 
@@ -416,6 +450,72 @@ final class UpdateRepoAction
         }
 
         return null;
+    }
+
+    /**
+     * Whether this run left the repo exactly as it found it, which is the
+     * signal that neither verification step — `composer prep` nor the
+     * site-crawler — has anything new to catch. Both exist to find breakage
+     * this run introduced; over an unchanged repo they re-test code that
+     * already passed and only cost minutes, which is what made a back-to-back
+     * run over an up-to-date set of repos so slow.
+     *
+     * All four conditions have to hold:
+     *
+     *   - No parsed package updates. The obvious one: `craft update` (and the
+     *     composer sweep) reported nothing to do.
+     *   - HEAD still on the baseline commit. The checkout and pull run before
+     *     the update step, so a moved HEAD means we pulled somebody else's
+     *     work into the working copy — different code, which still gets the
+     *     full tests-and-crawl treatment.
+     *   - A clean working tree. This is the backstop for an update we failed to
+     *     *parse*: a craft or composer output shape the regex doesn't
+     *     recognise still writes composer.lock, so a dirty tree vetoes the
+     *     skip even when the parsed list came back empty.
+     *   - No dirty-repo reset. A maintenance reset throws away whatever the
+     *     working tree held and re-applies project config with --force, so the
+     *     site is not what it was a moment ago.
+     *
+     * Called once, right after the update step, so both steps answer to the
+     * same decision. Any git command that fails here answers "not untouched":
+     * without a reliable answer we verify, because a needless run only costs
+     * time while a wrongly skipped one hides a broken site.
+     *
+     * @param  list<array{name: string, from: string, to: string}>  $packageUpdates
+     */
+    private static function repoUntouched(
+        string $repoPath,
+        ?string $baselineHead,
+        array $packageUpdates,
+        bool $wasReset,
+    ): bool {
+        if ($wasReset || ! empty($packageUpdates) || $baselineHead === null) {
+            return false;
+        }
+
+        if (self::currentHead($repoPath) !== $baselineHead) {
+            return false;
+        }
+
+        $status = self::run(['git', 'status', '--porcelain'], $repoPath, 60, null, '', stream: false);
+
+        return $status->isSuccessful() && trim($status->getOutput()) === '';
+    }
+
+    /**
+     * The commit HEAD points at, or null when git can't answer (an unborn
+     * branch in a fresh repo, a broken checkout).
+     */
+    private static function currentHead(string $repoPath): ?string
+    {
+        $proc = self::run(['git', 'rev-parse', 'HEAD'], $repoPath, 60, null, '', stream: false);
+        if (! $proc->isSuccessful()) {
+            return null;
+        }
+
+        $head = trim($proc->getOutput());
+
+        return $head === '' ? null : $head;
     }
 
     /**

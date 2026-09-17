@@ -725,6 +725,17 @@ class UpdateAllCommand extends Command
             $parts[] = 'uncommitted changes';
         }
 
+        // One phrase for both verification steps: they answer to the same
+        // "did this run change anything" decision, so listing them separately
+        // would only pad the column.
+        $skipped = array_values(array_filter([
+            $r->prepSkippedUnchanged ? 'prep' : null,
+            $r->crawlerSkippedUnchanged ? 'crawl' : null,
+        ]));
+        if (! empty($skipped)) {
+            $parts[] = sprintf('<fg=gray>%s skipped (repo unchanged)</>', implode(' + ', $skipped));
+        }
+
         return implode(' · ', $parts) ?: '-';
     }
 

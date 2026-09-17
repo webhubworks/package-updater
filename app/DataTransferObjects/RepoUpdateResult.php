@@ -28,6 +28,10 @@ final readonly class RepoUpdateResult
         public array $packageUpdates = [],
         public bool $committed = false,
         public bool $pushed = false,
+        /** True when `composer prep` was in scope for this repo but skipped because the run changed nothing. */
+        public bool $prepSkippedUnchanged = false,
+        /** True when the crawler was in scope for this repo but skipped because the run changed nothing. */
+        public bool $crawlerSkippedUnchanged = false,
     ) {}
 
     public static function success(
@@ -49,6 +53,8 @@ final readonly class RepoUpdateResult
         array $packageUpdates = [],
         bool $committed = false,
         bool $pushed = false,
+        bool $prepSkippedUnchanged = false,
+        bool $crawlerSkippedUnchanged = false,
     ): self {
         return new self(
             repoPath: $path,
@@ -71,6 +77,8 @@ final readonly class RepoUpdateResult
             packageUpdates: $packageUpdates,
             committed: $committed,
             pushed: $pushed,
+            prepSkippedUnchanged: $prepSkippedUnchanged,
+            crawlerSkippedUnchanged: $crawlerSkippedUnchanged,
         );
     }
 
@@ -123,6 +131,8 @@ final readonly class RepoUpdateResult
             'packageUpdates' => $this->packageUpdates,
             'committed' => $this->committed,
             'pushed' => $this->pushed,
+            'prepSkippedUnchanged' => $this->prepSkippedUnchanged,
+            'crawlerSkippedUnchanged' => $this->crawlerSkippedUnchanged,
         ];
     }
 
@@ -151,6 +161,8 @@ final readonly class RepoUpdateResult
             packageUpdates: is_array($data['packageUpdates'] ?? null) ? array_values($data['packageUpdates']) : [],
             committed: (bool) ($data['committed'] ?? false),
             pushed: (bool) ($data['pushed'] ?? false),
+            prepSkippedUnchanged: (bool) ($data['prepSkippedUnchanged'] ?? false),
+            crawlerSkippedUnchanged: (bool) ($data['crawlerSkippedUnchanged'] ?? false),
         );
     }
 }
