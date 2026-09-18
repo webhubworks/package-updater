@@ -1627,6 +1627,15 @@ final class UpdateRepoAction
      * commit on a stale tree and silently drop whatever already lives upstream,
      * so we abort and tell the user which branch is ahead and by how much.
      *
+     * Two things stop short of aborting, because neither loses anything. A
+     * higher branch that's ahead only by a merge of this branch into it carries
+     * no content to pick up, so the routine merge-down of `develop` into `main`
+     * is ignored outright (mergeBringsNoChanges()). One that does carry content
+     * is merged down here when git can fast-forward to it, which is the case
+     * whenever this branch has no commits of its own yet (fastForwardTo()).
+     * What's left - both branches carrying work the other doesn't have - is the
+     * case that still aborts.
+     *
      * The remote-tracking refs were refreshed by the fetch that precedes the
      * checkout, so we compare HEAD against both the local and origin ref of
      * each higher candidate (whichever is further ahead wins). Returns a failed
@@ -1646,14 +1655,26 @@ final class UpdateRepoAction
 
         $ahead = [];
         foreach ($higher as $candidate) {
-            ['count' => $count, 'newest' => $newest] = self::commitsAhead($repoPath, $candidate);
-            if ($count > 0) {
-                // The date of the newest unmerged commit is what tells a hotfix
-                // somebody forgot to merge down from history nobody has touched
-                // in years, so it goes in the message rather than a log.
-                $ahead[] = $newest !== null
-                    ? "{$candidate} (+{$count}, newest {$newest})"
-                    : "{$candidate} (+{$count})";
+            // A candidate has two refs (local and origin), and a fast-forward to
+            // one can leave the other still ahead, so keep re-measuring until
+            // the candidate is caught up or a ref refuses to fast-forward. Each
+            // pass moves HEAD strictly forward onto a ref tip, so this ends
+            // after at most one pass per ref.
+            while (true) {
+                ['count' => $count, 'newest' => $newest, 'ref' => $ref] = self::commitsAhead($repoPath, $candidate);
+                if ($count === 0 || $ref === null) {
+                    break;
+                }
+
+                if (! self::fastForwardTo($repoPath, $branch, $ref, $count, $newest, $onProgress)) {
+                    // The date of the newest unmerged commit is what tells a hotfix
+                    // somebody forgot to merge down from history nobody has touched
+                    // in years, so it goes in the message rather than a log.
+                    $ahead[] = $newest !== null
+                        ? "{$candidate} (+{$count}, newest {$newest})"
+                        : "{$candidate} (+{$count})";
+                    break;
+                }
             }
         }
 
@@ -1779,7 +1800,11 @@ final class UpdateRepoAction
      * ahead, so a branch that's ahead in either place is caught. Non-existent
      * refs and git failures contribute 0.
      *
-     * @return array{count: int, newest: string|null}
+     * A ref that's ahead in commits but carries no content HEAD is missing
+     * counts as 0, so a merge-down commit doesn't block the run. See
+     * mergeBringsNoChanges().
+     *
+     * @return array{count: int, newest: string|null, ref: string|null}
      */
     private static function commitsAhead(string $repoPath, string $candidate): array
     {
@@ -1799,6 +1824,16 @@ final class UpdateRepoAction
             }
 
             $count = (int) trim($revList->getOutput());
+            if ($count === 0) {
+                continue;
+            }
+
+            // Checked only for a ref that is ahead, because the three-way merge
+            // costs more than the commit count that rules most refs out.
+            if (self::mergeBringsNoChanges($repoPath, $ref)) {
+                continue;
+            }
+
             if ($count > $max) {
                 $max = $count;
                 $furthest = $ref;
@@ -1806,13 +1841,105 @@ final class UpdateRepoAction
         }
 
         if ($furthest === null) {
-            return ['count' => 0, 'newest' => null];
+            return ['count' => 0, 'newest' => null, 'ref' => null];
         }
 
         $newest = self::run(['git', 'log', '-1', '--format=%cs', "HEAD..{$furthest}"], $repoPath, 60, null, '', stream: false);
         $date = $newest->isSuccessful() ? trim($newest->getOutput()) : '';
 
-        return ['count' => $max, 'newest' => $date !== '' ? $date : null];
+        return ['count' => $max, 'newest' => $date !== '' ? $date : null, 'ref' => $furthest];
+    }
+
+    /**
+     * Merge the higher branch down into the checked-out one, but only when git
+     * can do it as a fast-forward: HEAD is an ancestor of the ref, so the merge
+     * is a ref move onto a commit that already contains every commit we have.
+     * Returns true when the branch is now caught up with that ref.
+     *
+     * Merging down is the direction this hierarchy expects - `main` back into
+     * `develop` after a release - and a fast-forward is its degenerate case,
+     * where git doesn't even need a merge commit. Nothing is rewritten, nothing
+     * can conflict, and the higher branch isn't touched at all, so the update
+     * lands on a tree that has the higher branch's work in it rather than
+     * aborting for a human to do the same merge by hand. A branch that has
+     * commits of its own is not an ancestor, git refuses the fast-forward, and
+     * the run aborts exactly as before.
+     *
+     * Only ever reached for a ref that carries content HEAD is missing, because
+     * commitsAhead() has already dropped the ones that don't. That keeps the
+     * routine merge-down of `develop` into `main` a pure no-op instead of a ref
+     * move that would make an otherwise unchanged run look changed.
+     *
+     * @param  callable(string, ?string, ?string): void|null  $onProgress
+     */
+    private static function fastForwardTo(string $repoPath, string $branch, string $ref, int $count, ?string $newest, ?callable $onProgress): bool
+    {
+        // Exits non-zero when HEAD is not an ancestor, i.e. the branches have
+        // genuinely diverged and merging down needs a human.
+        $isAncestor = self::run(['git', 'merge-base', '--is-ancestor', 'HEAD', $ref], $repoPath, 30, null, '', stream: false);
+        if (! $isAncestor->isSuccessful()) {
+            return false;
+        }
+
+        $merge = self::run(['git', 'merge', '--ff-only', $ref], $repoPath, 120, null, "git merge --ff-only {$ref}", stream: false);
+        if (! $merge->isSuccessful()) {
+            return false;
+        }
+
+        if ($onProgress !== null) {
+            // Worth saying out loud: the branch moved, and how far. A gap of
+            // hundreds of commits means the repo integrates on the higher
+            // branch these days and this one was left behind, which is a
+            // different story from catching up on last week's release.
+            $onProgress('step-start', null, sprintf(
+                "fast-forwarded '%s' to %s (+%d%s)",
+                $branch,
+                $ref,
+                $count,
+                $newest !== null ? ", newest {$newest}" : '',
+            ));
+        }
+
+        return true;
+    }
+
+    /**
+     * True when merging the given ref into HEAD would leave HEAD's tree exactly
+     * as it is: the ref is ahead in commits, but carries no content HEAD is
+     * missing.
+     *
+     * This is what lets a merge-down survive the guard. Merging `develop` into
+     * `main` puts a commit on `main` that `develop` doesn't have, so counting
+     * commits reports `develop` as behind by a merge whose entire content is
+     * `develop` itself. Asking what a merge would actually bring is the
+     * question we mean all along, and it still catches every case worth
+     * aborting on: a hotfix committed straight to `main`, a hotfix branch
+     * merged into `main` and never merged down, and a file edited while
+     * resolving the merge all change the tree.
+     *
+     * `git merge-tree --write-tree` runs the three-way merge in memory - no
+     * checkout, no index, no working tree - and prints the resulting tree. It
+     * needs git 2.38 (October 2022); older git fails the call the same way a
+     * conflict does, and the ref then counts as ahead, which is the stricter
+     * behaviour we had before.
+     */
+    private static function mergeBringsNoChanges(string $repoPath, string $ref): bool
+    {
+        $headTree = self::run(['git', 'rev-parse', 'HEAD^{tree}'], $repoPath, 30, null, '', stream: false);
+        if (! $headTree->isSuccessful()) {
+            return false;
+        }
+
+        // Non-zero also means the merge conflicts, which is content by definition.
+        $merged = self::run(['git', 'merge-tree', '--write-tree', 'HEAD', $ref], $repoPath, 120, null, '', stream: false);
+        if (! $merged->isSuccessful()) {
+            return false;
+        }
+
+        // The tree OID is the first line; a conflict-free merge prints nothing else.
+        $tree = trim(explode("\n", trim($merged->getOutput()))[0]);
+
+        return $tree !== '' && $tree === trim($headTree->getOutput());
     }
 
     /**
