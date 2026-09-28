@@ -32,6 +32,10 @@ final readonly class RepoUpdateResult
         public bool $prepSkippedUnchanged = false,
         /** True when the crawler was in scope for this repo but skipped because the run changed nothing. */
         public bool $crawlerSkippedUnchanged = false,
+        /** True when the repo carries the `.nopu` marker and was left untouched on purpose. */
+        public bool $excluded = false,
+        /** Set when a diverged branch was reset to origin under maintenance, e.g. "discarded 1 local commit". */
+        public ?string $divergedReset = null,
     ) {}
 
     public static function success(
@@ -55,6 +59,7 @@ final readonly class RepoUpdateResult
         bool $pushed = false,
         bool $prepSkippedUnchanged = false,
         bool $crawlerSkippedUnchanged = false,
+        ?string $divergedReset = null,
     ): self {
         return new self(
             repoPath: $path,
@@ -79,6 +84,23 @@ final readonly class RepoUpdateResult
             pushed: $pushed,
             prepSkippedUnchanged: $prepSkippedUnchanged,
             crawlerSkippedUnchanged: $crawlerSkippedUnchanged,
+            divergedReset: $divergedReset,
+        );
+    }
+
+    /**
+     * The repo carries the `.nopu` marker, so the run found it but left it
+     * alone. Reported as skipped so every summary lists it, with the flag
+     * letting the Slack message tell a deliberate pause from a problem.
+     */
+    public static function excluded(string $path, ?string $branch = null): self
+    {
+        return new self(
+            repoPath: $path,
+            status: 'skipped',
+            branch: $branch,
+            message: 'excluded via .nopu',
+            excluded: true,
         );
     }
 
@@ -133,6 +155,8 @@ final readonly class RepoUpdateResult
             'pushed' => $this->pushed,
             'prepSkippedUnchanged' => $this->prepSkippedUnchanged,
             'crawlerSkippedUnchanged' => $this->crawlerSkippedUnchanged,
+            'excluded' => $this->excluded,
+            'divergedReset' => $this->divergedReset,
         ];
     }
 
@@ -163,6 +187,8 @@ final readonly class RepoUpdateResult
             pushed: (bool) ($data['pushed'] ?? false),
             prepSkippedUnchanged: (bool) ($data['prepSkippedUnchanged'] ?? false),
             crawlerSkippedUnchanged: (bool) ($data['crawlerSkippedUnchanged'] ?? false),
+            excluded: (bool) ($data['excluded'] ?? false),
+            divergedReset: $data['divergedReset'] ?? null,
         );
     }
 }

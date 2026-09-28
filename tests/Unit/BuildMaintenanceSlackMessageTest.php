@@ -178,3 +178,58 @@ test('long buckets are split across multiple section blocks under the char limit
     // The pushed bucket alone should have spilled into more than one section.
     expect(count($sectionLengths))->toBeGreaterThan(4);
 });
+
+test('an excluded repo gets its own section and is not counted as failed', function () {
+    $results = [
+        RepoUpdateResult::excluded('/reps/paused', 'main'),
+        RepoUpdateResult::skipped('/reps/dirty', 'uncommitted changes'),
+    ];
+
+    $payload = BuildMaintenanceSlackMessage::build($results, 'all', '/reps', '2026-09-28 09:00');
+    $text = blockTexts($payload);
+
+    expect($text)->toContain('Excluded via .nopu* (1)');
+    expect($text)->toContain('• *paused*');
+    expect($text)->toContain('Failed / other issues* (1)');
+    expect($text)->not->toContain('*paused* - skipped');
+    expect($text)->toContain('| 1 excluded');
+    expect($payload['text'])->toContain('1 failed/other');
+});
+
+test('the excluded section is left out when nothing was excluded', function () {
+    $results = [RepoUpdateResult::skipped('/reps/dirty', 'uncommitted changes')];
+
+    $text = blockTexts(BuildMaintenanceSlackMessage::build($results, 'all', '/reps', '2026-09-28 09:00'));
+
+    expect($text)->not->toContain('Excluded via .nopu');
+    expect($text)->not->toContain('excluded');
+});
+
+test('a diverged reset is named on the repo line', function () {
+    $results = [
+        RepoUpdateResult::success(
+            path: '/reps/delta', branch: 'main', hasUncommittedChanges: false,
+            packageUpdates: [['name' => 'x/y', 'from' => '1.0', 'to' => '1.1']],
+            committed: true, pushed: true,
+            divergedReset: 'discarded 1 local commit',
+        ),
+    ];
+
+    $text = blockTexts(BuildMaintenanceSlackMessage::build($results, 'all', '/reps', '2026-09-28 09:00'));
+
+    expect($text)->toContain('*delta* - 1 update (diverged, reset to origin: discarded 1 local commit)');
+});
+
+test('a diverged reset with nothing to update does not vanish into the up to date count', function () {
+    $results = [
+        RepoUpdateResult::success(
+            path: '/reps/epsilon', branch: 'main', hasUncommittedChanges: false,
+            divergedReset: 'discarded 2 local commits',
+        ),
+    ];
+
+    $text = blockTexts(BuildMaintenanceSlackMessage::build($results, 'all', '/reps', '2026-09-28 09:00'));
+
+    expect($text)->toContain('*epsilon* - up to date (diverged, reset to origin: discarded 2 local commits)');
+    expect($text)->not->toContain('already up to date');
+});

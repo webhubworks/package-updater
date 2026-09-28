@@ -715,6 +715,10 @@ class UpdateAllCommand extends Command
             $parts[] = 'unchanged';
         }
 
+        if ($r->divergedReset !== null) {
+            $parts[] = "<fg=yellow>diverged, reset to origin ({$r->divergedReset})</>";
+        }
+
         if ($r->committed) {
             $count = count($r->packageUpdates);
             $committedNote = $count > 0

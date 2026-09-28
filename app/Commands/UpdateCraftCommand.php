@@ -209,9 +209,11 @@ class UpdateCraftCommand extends UpdateAllCommand
         }
 
         // In maintenance mode the host runs updates exclusively, so a dirty
-        // repo is a leftover from a previous run: hard-reset it and update
-        // anyway instead of skipping.
+        // repo or an unpushed local commit next to new commits on origin is a
+        // leftover from a previous run: reset it and update anyway instead of
+        // skipping or failing.
         $resetIfDirty = (bool) $this->option('maintenance');
+        $resetIfDiverged = $resetIfDirty;
 
         $updater = fn (string $repo, callable $onProgress) => UpdateRepoAction::update(
             repoPath: $repo,
@@ -224,9 +226,10 @@ class UpdateCraftCommand extends UpdateAllCommand
             sweepPatterns: $sweepPatterns,
             push: $push,
             resetIfDirty: $resetIfDirty,
+            resetIfDiverged: $resetIfDiverged,
         );
 
-        $buildCmd = function (string $repo, string $php, string $binary) use ($packagesByPath, $craftCommandLine, $keepDdevRunning, $crawlSet, $crawlerCommandLine, $commit, $sweepPatterns, $push, $resetIfDirty): array {
+        $buildCmd = function (string $repo, string $php, string $binary) use ($packagesByPath, $craftCommandLine, $keepDdevRunning, $crawlSet, $crawlerCommandLine, $commit, $sweepPatterns, $push, $resetIfDirty, $resetIfDiverged): array {
             $cmd = [$php, $binary, 'update:single', $repo, $packagesByPath[$repo], '--craft-command='.$craftCommandLine];
             if (! $keepDdevRunning) {
                 $cmd[] = '--stop-ddev';
@@ -242,6 +245,9 @@ class UpdateCraftCommand extends UpdateAllCommand
             }
             if ($resetIfDirty) {
                 $cmd[] = '--reset-if-dirty';
+            }
+            if ($resetIfDiverged) {
+                $cmd[] = '--reset-if-diverged';
             }
             foreach ($sweepPatterns as $pattern) {
                 $cmd[] = '--composer-sweep='.$pattern;

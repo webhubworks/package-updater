@@ -19,7 +19,8 @@ class UpdateSingleCommand extends Command
         {--composer-sweep=*}
         {--commit}
         {--push}
-        {--reset-if-dirty}';
+        {--reset-if-dirty}
+        {--reset-if-diverged}';
 
     protected $description = 'Internal: update a single repo and emit JSON result on stdout';
 
@@ -48,6 +49,7 @@ class UpdateSingleCommand extends Command
             sweepPatterns: $sweepPatterns ?: null,
             push: (bool) $this->option('push'),
             resetIfDirty: (bool) $this->option('reset-if-dirty'),
+            resetIfDiverged: (bool) $this->option('reset-if-diverged'),
         );
 
         $this->output->writeln(json_encode($result->toArray()));

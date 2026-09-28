@@ -18,6 +18,10 @@ use PackageUpdater\Support\RepoName;
  *
  * Success repos that had nothing to update are counted as "already up to
  * date" and reported as a single footer count rather than listed.
+ *
+ * Repos paused with the `.nopu` marker are a deliberate choice, not a
+ * problem, so they get their own short section below the three buckets
+ * (only when there are any) instead of landing in C.
  */
 final class BuildMaintenanceSlackMessage
 {
@@ -48,6 +52,8 @@ final class BuildMaintenanceSlackMessage
         $needsReview = [];
         /** @var list<string> $failed */
         $failed = [];
+        /** @var list<string> $excluded */
+        $excluded = [];
         $upToDate = 0;
 
         foreach ($results as $r) {
@@ -55,6 +61,12 @@ final class BuildMaintenanceSlackMessage
 
             if ($r->status === 'failed') {
                 $failed[] = sprintf('• *%s* - %s', $name, self::firstLine($r->message));
+
+                continue;
+            }
+
+            if ($r->excluded) {
+                $excluded[] = sprintf('• *%s*', $name);
 
                 continue;
             }
@@ -69,7 +81,7 @@ final class BuildMaintenanceSlackMessage
             // run was error-free, so there is nothing to flag here).
             if ($r->committed && $r->pushed) {
                 $count = count($r->packageUpdates);
-                $pushed[] = sprintf('• *%s* - %d update%s', $name, $count, $count === 1 ? '' : 's');
+                $pushed[] = self::withDivergedReset(sprintf('• *%s* - %d update%s', $name, $count, $count === 1 ? '' : 's'), $r);
 
                 continue;
             }
@@ -80,7 +92,7 @@ final class BuildMaintenanceSlackMessage
             if ($hasChanges) {
                 $state = $r->committed ? 'committed, not pushed' : 'uncommitted changes';
                 $reason = empty($issues) ? $state : sprintf('%s (%s)', $state, implode(', ', $issues));
-                $needsReview[] = self::withCrawlerUrls(sprintf('• *%s* - %s', $name, $reason), $r);
+                $needsReview[] = self::withCrawlerUrls(self::withDivergedReset(sprintf('• *%s* - %s', $name, $reason), $r), $r);
 
                 continue;
             }
@@ -89,7 +101,16 @@ final class BuildMaintenanceSlackMessage
             // otherwise up-to-date repo (5xx during the crawl, a crawler crash,
             // failing tests). Those must not vanish into the "up to date" count.
             if (! empty($issues)) {
-                $failed[] = self::withCrawlerUrls(sprintf('• *%s* - %s', $name, implode(', ', $issues)), $r);
+                $failed[] = self::withCrawlerUrls(self::withDivergedReset(sprintf('• *%s* - %s', $name, implode(', ', $issues)), $r), $r);
+
+                continue;
+            }
+
+            // Discarding a local commit is worth a line of its own even when
+            // the run then found nothing to update, so it can't vanish into
+            // the "up to date" count either.
+            if ($r->divergedReset !== null) {
+                $failed[] = self::withDivergedReset(sprintf('• *%s* - up to date', $name), $r);
 
                 continue;
             }
@@ -114,6 +135,9 @@ final class BuildMaintenanceSlackMessage
         if ($upToDate > 0) {
             $countsLine .= sprintf(' | %d already up to date', $upToDate);
         }
+        if (! empty($excluded)) {
+            $countsLine .= sprintf(' | %d excluded', count($excluded));
+        }
 
         $blocks = [
             [
@@ -134,6 +158,9 @@ final class BuildMaintenanceSlackMessage
         array_push($blocks, ...self::sectionBlocks(sprintf('✅ *Updated, committed & pushed* (%d)', count($pushed)), $pushed));
         array_push($blocks, ...self::sectionBlocks(sprintf('⚠️ *Updated but not pushed* (%d)', count($needsReview)), $needsReview));
         array_push($blocks, ...self::sectionBlocks(sprintf('❌ *Failed / other issues* (%d)', count($failed)), $failed));
+        if (! empty($excluded)) {
+            array_push($blocks, ...self::sectionBlocks(sprintf('⏸️ *Excluded via .nopu* (%d)', count($excluded)), $excluded));
+        }
 
         return [
             'username' => self::SENDER_NAME,
@@ -169,6 +196,19 @@ final class BuildMaintenanceSlackMessage
         }
 
         return $issues;
+    }
+
+    /**
+     * Note a maintenance reset of a diverged branch, so a discarded local
+     * commit never goes unmentioned.
+     */
+    private static function withDivergedReset(string $line, RepoUpdateResult $r): string
+    {
+        if ($r->divergedReset === null) {
+            return $line;
+        }
+
+        return sprintf('%s (diverged, reset to origin: %s)', $line, $r->divergedReset);
     }
 
     /**

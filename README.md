@@ -177,6 +177,32 @@ composer install` from the committed lock — so a half-extracted vendor
 tree (which can stop Craft from even booting) can't wedge the retry.
 Genuine dependency conflicts are never retried.
 
+`--maintenance` also **resets a diverged branch to origin**. When the
+branch carries local commits that were never pushed (usually a previous
+run whose push was held back by failing tests or crawler errors) and
+origin has moved on in the meantime, the fast-forward pull can't work.
+Instead of failing, the run does `git reset --hard origin/<branch>`,
+discards the local commits, and rebuilds the update on top. The summary
+and the Slack message both name the repo and how many commits were
+discarded. A branch that's only ahead of origin is left alone, so its
+commit goes out with the next push. A normal `update:craft` run still
+fails on a diverged branch.
+
+#### Excluding a project
+
+To pause a project, put an empty `.nopu` file in its root, the way you'd
+add a `.gitkeep`, and commit it. Every command (`update:all`,
+`update:craft`, `remove`) then finds the repo but leaves it completely
+untouched: no reset, no pull, no ddev. It shows up as `excluded via
+.nopu` in the summary, and in its own section of the Slack message
+instead of among the failures. To resume, commit the removal.
+
+The marker is read from origin's branch right after the fetch, so a
+marker a colleague just pushed takes effect on the next run, and so does
+its removal, even though the server's own checkout is still stale. An
+untracked `.nopu` on one machine also works, as a local override that
+never leaves that machine.
+
 ### `retry`
 
 Re-runs the most recent `update:all` or `update:craft` non-interactively

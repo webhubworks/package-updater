@@ -14,6 +14,13 @@ final class UpdateRepoAction
     private const MaintenanceUpdateRetries = 1;
 
     /**
+     * An empty file in a repo's root that pauses every run for it. Committed,
+     * it pauses the repo on every machine until a commit removes it again.
+     * Untracked, it's a local override for one machine. See isExcluded().
+     */
+    public const ExcludeMarker = '.nopu';
+
+    /**
      * The long-lived branches grouped into precedence tiers, lowest first. A
      * branch is "higher" than the checked-out one when it lives in a later
      * tier. Synonyms share a tier (develop/dev, staging/stag/stage, main/master,
@@ -77,6 +84,10 @@ final class UpdateRepoAction
      *                              (`git reset --hard HEAD` + `git clean -fd`) instead of being
      *                              skipped, then updated from the clean tree. Intended for the
      *                              dedicated maintenance server where local edits are never real work.
+     * @param  bool  $resetIfDiverged  When true, a branch whose local commits and origin's have
+     *                                 diverged is reset to `origin/<branch>` instead of failing the
+     *                                 fast-forward pull. The discarded commits are reported via
+     *                                 divergedReset. Maintenance server only, like $resetIfDirty.
      */
     public static function update(
         string $repoPath,
@@ -92,10 +103,11 @@ final class UpdateRepoAction
         ?array $sweepPatterns = null,
         bool $push = false,
         bool $resetIfDirty = false,
+        bool $resetIfDiverged = false,
     ): RepoUpdateResult {
         $transcriptPath = self::openTranscript($repoPath);
         try {
-            $result = self::doUpdate($repoPath, $package, $onProgress, $withAllDependencies, $updatePackage, $keepDdevRunning, $craftCommandLine, $crawlerCommandLine, $commit, $removeSpec, $sweepPatterns, $push, $resetIfDirty);
+            $result = self::doUpdate($repoPath, $package, $onProgress, $withAllDependencies, $updatePackage, $keepDdevRunning, $craftCommandLine, $crawlerCommandLine, $commit, $removeSpec, $sweepPatterns, $push, $resetIfDirty, $resetIfDiverged);
         } finally {
             self::closeTranscript();
         }
@@ -125,6 +137,7 @@ final class UpdateRepoAction
         ?array $sweepPatterns = null,
         bool $push = false,
         bool $resetIfDirty = false,
+        bool $resetIfDiverged = false,
     ): RepoUpdateResult {
         $updatePackage = $updatePackage ?? $package;
 
@@ -137,6 +150,39 @@ final class UpdateRepoAction
         $status = self::run(['git', 'status', '--porcelain'], $repoPath, 120, $onProgress, 'git status', stream: false);
         if (! $status->isSuccessful()) {
             return self::fail($repoPath, null, 'git status', $status);
+        }
+
+        // Refresh the remote-tracking refs before choosing a branch. A repo
+        // that was cloned (or last fetched) before `develop` was created has no
+        // local trace of it, so pickBranch() would fall through to `main` and
+        // the whole update would land on the wrong branch. --prune drops refs
+        // for branches that no longer exist on origin, so a stale ref can't win
+        // either. A failed fetch is fatal on purpose: without current refs the
+        // branch choice is a guess, and the `git pull` further down would hit
+        // the same unreachable remote anyway. The fetch, defaultBranch() and
+        // pickBranch() only read and update refs, never the working tree, so
+        // they run ahead of the dirty-repo reset: the exclusion check needs the
+        // branch before anything destructive happens.
+        $fetch = self::run(['git', 'fetch', '--prune', 'origin'], $repoPath, 300, $onProgress, 'git fetch --prune origin', stream: false);
+        if (! $fetch->isSuccessful()) {
+            return self::fail($repoPath, null, 'git fetch --prune origin', $fetch);
+        }
+
+        // Ask origin which branch is its default. A repo that was renamed from
+        // `master` to `main` (or the other way round) usually keeps the old
+        // branch around, abandoned, and by name alone that corpse still looks
+        // like a long-lived branch. The default tells the two apart, so both
+        // the checkout below and the ahead-guard further down ignore every
+        // other name in the default's tier.
+        $defaultBranch = self::defaultBranch($repoPath);
+
+        $branch = self::pickBranch($repoPath, $defaultBranch);
+        if ($branch === null) {
+            return RepoUpdateResult::failed($repoPath, 'no develop/staging/main/master branch found');
+        }
+
+        if (self::isExcluded($repoPath, $branch)) {
+            return self::excluded($repoPath, $branch, $onProgress);
         }
 
         $wasReset = false;
@@ -158,44 +204,43 @@ final class UpdateRepoAction
         // branch — see repoUntouched().
         $baselineHead = self::currentHead($repoPath);
 
-        // Refresh the remote-tracking refs before choosing a branch. A repo
-        // that was cloned (or last fetched) before `develop` was created has no
-        // local trace of it, so pickBranch() would fall through to `main` and
-        // the whole update would land on the wrong branch. --prune drops refs
-        // for branches that no longer exist on origin, so a stale ref can't win
-        // either. A failed fetch is fatal on purpose: without current refs the
-        // branch choice is a guess, and the `git pull` two steps down would hit
-        // the same unreachable remote anyway.
-        $fetch = self::run(['git', 'fetch', '--prune', 'origin'], $repoPath, 300, $onProgress, 'git fetch --prune origin', stream: false);
-        if (! $fetch->isSuccessful()) {
-            return self::fail($repoPath, null, 'git fetch --prune origin', $fetch);
-        }
-
-        // Ask origin which branch is its default. A repo that was renamed from
-        // `master` to `main` (or the other way round) usually keeps the old
-        // branch around, abandoned, and by name alone that corpse still looks
-        // like a long-lived branch. The default tells the two apart, so both
-        // the checkout below and the ahead-guard further down ignore every
-        // other name in the default's tier.
-        $defaultBranch = self::defaultBranch($repoPath);
-
-        $branch = self::pickBranch($repoPath, $defaultBranch);
-        if ($branch === null) {
-            return RepoUpdateResult::failed($repoPath, 'no develop/staging/main/master branch found');
-        }
-
         $checkout = self::run(['git', 'checkout', $branch], $repoPath, 120, $onProgress, "git checkout {$branch}");
         if (! $checkout->isSuccessful()) {
             return self::fail($repoPath, $branch, "git checkout {$branch}", $checkout);
         }
 
-        $pull = self::run(['git', 'pull', '--ff-only', 'origin', $branch], $repoPath, 600, $onProgress, "git pull --ff-only origin {$branch}");
-        if (! $pull->isSuccessful()) {
-            if (self::isMissingRemoteRef($pull)) {
-                return self::diagnoseMissingRemoteBranch($repoPath, $branch, $pull, $onProgress);
+        // A local commit that never got pushed (usually a previous run whose
+        // push was held back) next to new commits on origin makes the
+        // fast-forward pull impossible. On the maintenance host such a commit
+        // is a leftover, so origin wins and the update rebuilds it on top.
+        $divergedReset = null;
+        if ($resetIfDiverged) {
+            $diverged = self::resetDivergedBranch($repoPath, $branch, $onProgress);
+            if ($diverged instanceof RepoUpdateResult) {
+                return $diverged;
             }
+            if ($diverged !== null) {
+                $divergedReset = $diverged;
+                $wasReset = true;
+            }
+        }
 
-            return self::fail($repoPath, $branch, 'git pull', $pull);
+        if ($divergedReset === null) {
+            $pull = self::run(['git', 'pull', '--ff-only', 'origin', $branch], $repoPath, 600, $onProgress, "git pull --ff-only origin {$branch}");
+            if (! $pull->isSuccessful()) {
+                if (self::isMissingRemoteRef($pull)) {
+                    return self::diagnoseMissingRemoteBranch($repoPath, $branch, $pull, $onProgress);
+                }
+
+                return self::fail($repoPath, $branch, 'git pull', $pull);
+            }
+        }
+
+        // The ref check above already answered this for origin's tip. Checked
+        // again on the tree we now stand on as a safety net, before ddev or
+        // composer touch anything.
+        if (is_file($repoPath.'/'.self::ExcludeMarker)) {
+            return self::excluded($repoPath, $branch, $onProgress);
         }
 
         $aheadFailure = self::guardAgainstHigherBranchAhead($repoPath, $branch, $defaultBranch, $onProgress);
@@ -405,7 +450,101 @@ final class UpdateRepoAction
             pushed: $pushed,
             prepSkippedUnchanged: $prepSkippedUnchanged,
             crawlerSkippedUnchanged: $crawlerSkippedUnchanged,
+            divergedReset: $divergedReset,
         );
+    }
+
+    /**
+     * Whether the repo carries the exclusion marker. Answered from origin's
+     * freshly fetched tip of $branch rather than the working tree, because
+     * that's the state the pull is about to produce: a marker a colleague
+     * just pushed counts, and one they just removed no longer does, even
+     * while the stale local checkout still has it. An untracked marker in
+     * the working tree counts too, as a local override on this machine.
+     */
+    private static function isExcluded(string $repoPath, string $branch): bool
+    {
+        $marker = self::ExcludeMarker;
+
+        $onOrigin = self::run(['git', 'cat-file', '-e', "refs/remotes/origin/{$branch}:{$marker}"], $repoPath, 30, null, '', stream: false);
+        if ($onOrigin->isSuccessful()) {
+            return true;
+        }
+
+        if (! is_file($repoPath.'/'.$marker)) {
+            return false;
+        }
+
+        $tracked = self::run(['git', 'ls-files', '--error-unmatch', '--', $marker], $repoPath, 30, null, '', stream: false);
+
+        return ! $tracked->isSuccessful();
+    }
+
+    private static function excluded(string $repoPath, string $branch, ?callable $onProgress): RepoUpdateResult
+    {
+        if ($onProgress !== null) {
+            $onProgress('step-start', null, 'excluded via '.self::ExcludeMarker.', leaving the repo untouched');
+        }
+
+        return RepoUpdateResult::excluded($repoPath, $branch);
+    }
+
+    /**
+     * Reset the checked-out branch to origin's tip when the two have
+     * diverged: local commits origin doesn't have, and origin commits the
+     * branch doesn't have. Only reached under maintenance mode, where a local
+     * commit is a leftover from an earlier run whose push was held back.
+     *
+     * Returns null when the branch hasn't diverged (including when it's only
+     * ahead, which the pull and a later push handle, or has no origin
+     * counterpart, which the pull diagnoses), a short note like "discarded 1
+     * local commit" after a successful reset, or a failed result when the
+     * reset itself fails.
+     */
+    private static function resetDivergedBranch(string $repoPath, string $branch, ?callable $onProgress): string|RepoUpdateResult|null
+    {
+        $remote = "origin/{$branch}";
+        $count = self::run(['git', 'rev-list', '--left-right', '--count', "HEAD...refs/remotes/{$remote}"], $repoPath, 60, null, '', stream: false);
+        if (! $count->isSuccessful()) {
+            return null;
+        }
+
+        $counts = self::parseLeftRightCount($count->getOutput());
+        if ($counts === null || $counts['local'] === 0 || $counts['remote'] === 0) {
+            return null;
+        }
+
+        if ($onProgress !== null) {
+            $onProgress('step-start', null, sprintf(
+                'branch diverged from origin (%d local, %d remote), resetting to %s',
+                $counts['local'],
+                $counts['remote'],
+                $remote,
+            ));
+        }
+
+        $reset = self::run(['git', 'reset', '--hard', $remote], $repoPath, 120, $onProgress, "git reset --hard {$remote}");
+        if (! $reset->isSuccessful()) {
+            return self::fail($repoPath, $branch, "git reset --hard {$remote}", $reset);
+        }
+
+        return sprintf('discarded %d local commit%s', $counts['local'], $counts['local'] === 1 ? '' : 's');
+    }
+
+    /**
+     * Parse `git rev-list --left-right --count A...B`, which prints the
+     * commits only on the left side and only on the right side separated by
+     * whitespace. Returns null for anything that isn't two numbers.
+     *
+     * @return array{local: int, remote: int}|null
+     */
+    private static function parseLeftRightCount(string $output): ?array
+    {
+        if (! preg_match('/^\s*(\d+)\s+(\d+)\s*$/', $output, $m)) {
+            return null;
+        }
+
+        return ['local' => (int) $m[1], 'remote' => (int) $m[2]];
     }
 
     /**
