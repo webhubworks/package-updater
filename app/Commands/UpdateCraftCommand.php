@@ -454,7 +454,7 @@ class UpdateCraftCommand extends UpdateAllCommand
      */
     protected function resolveCrawlerCommand(): string
     {
-        $default = 'site-crawler crawl:ddev --exclude="assets,variant,index.php,downloads,actions,.pdf"';
+        $default = 'site-crawler crawl:ddev --concurrency=8 --exclude="uploads,assets,variant,index.php,downloads,actions,.pdf,.png,.jpg,.webp"';
 
         $cli = $this->option('crawler-command');
         if (is_string($cli) && $cli !== '') {
