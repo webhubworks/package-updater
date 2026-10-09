@@ -216,8 +216,13 @@ nothing is filtered, so a plain `retry` processes every repo again. Pass
 `--failed` to replay only against the repos marked failed in
 `logs/last-results.json`. The crawler selection is narrowed to match. If
 the last run never reached its summary, the stored results don't describe
-it and `--failed` refuses to guess. The replay saves its own narrowed repo
-list, so a later plain `retry` stays on those repos too.
+it and `--failed` refuses to guess.
+
+A replay never rewrites `logs/last-run.json` (`retry` passes the internal
+`--retrying` flag), so every `retry` replays the original run. It does
+write `logs/last-results.json`, so `open` and `retry --failed` see the
+latest outcome and each `retry --failed` only takes on what is still
+failing.
 
 ### `open`
 

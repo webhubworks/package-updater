@@ -55,6 +55,7 @@ class RetryCommand extends Command
             }
             $params['--'.$name] = $value;
         }
+        $params['--retrying'] = true;
 
         info(sprintf(
             'Replaying `%s` (saved %s)%s.',
@@ -67,10 +68,11 @@ class RetryCommand extends Command
     }
 
     /**
-     * The repos that failed in the last run, or null (after printing why)
-     * when the stored results can't be trusted to describe that run: they
+     * The repos that failed most recently, or null (after printing why) when
+     * the stored results can't be trusted to describe the stored run: they
      * are missing, belong to another command, or predate it because the run
-     * never reached its summary.
+     * never reached its summary. Replays don't rewrite the stored run but do
+     * write results, so after a retry these are the retry's failures.
      *
      * @param  array{command: string, timestamp: ?string}  $run
      * @return list<string>|null

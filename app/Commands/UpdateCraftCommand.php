@@ -43,7 +43,8 @@ class UpdateCraftCommand extends UpdateAllCommand
         {--composer-sweep=* : fnmatch patterns (e.g. webhubworks/*). After craft update, `composer outdated` is parsed and any installed package matching a pattern is bumped via `composer update -W` + migrate/all + project-config/apply. Repeatable; overrides the stored default.}
         {--no-composer-sweep : Disable the composer sweep step for this run (overrides the stored default).}
         {--maintenance : Semi-automated dedicated-server run. Implies --yes and defaults to: handle "all", --parallel=3, --stop-ddev, commit + push, crawl every repo, and a craft command with --backup=0. Posts a run summary to Slack when a webhook is configured (see `pu setup`). Explicit flags still override each default.}
-        {--yes : Skip the confirmation prompt}';
+        {--yes : Skip the confirmation prompt}
+        {--retrying : Set by `retry`, not meant to be passed by hand. Keeps logs/last-run.json untouched so the original run stays the one that is replayed.}';
 
     protected $description = 'Run `ddev php craft update <handle>` across local repos containing the given Craft plugin (or Craft itself)';
 
@@ -178,26 +179,30 @@ class UpdateCraftCommand extends UpdateAllCommand
             return self::SUCCESS;
         }
 
-        LastRunStore::save('update:craft', ['handle' => $handle], [
-            'reps-dir' => $reposDir,
-            'parallel' => (string) $parallel,
-            'target-version' => $rawTarget,
-            'filter-name' => $this->option('filter-name') ?: null,
-            'repo' => array_map(fn ($m) => $m['path'], $matches),
-            'stop-ddev' => ! $keepDdevRunning,
-            'no-ssh-auth' => (bool) $this->option('no-ssh-auth'),
-            'craft-command' => $craftCommandLine,
-            'crawl-repo' => $crawlPaths,
-            'no-crawl' => empty($crawlPaths),
-            'crawler-command' => $crawlerCommandLine,
-            'composer-sweep' => $sweepPatterns,
-            'no-composer-sweep' => empty($sweepPatterns),
-            'commit' => $commit,
-            'no-commit' => ! $commit,
-            'push' => $push,
-            'no-push' => ! $push,
-            'yes' => true,
-        ]);
+        // A replay leaves the stored run alone, so repeated `retry` calls
+        // keep replaying the original run instead of a narrowed copy.
+        if (! $this->option('retrying')) {
+            LastRunStore::save('update:craft', ['handle' => $handle], [
+                'reps-dir' => $reposDir,
+                'parallel' => (string) $parallel,
+                'target-version' => $rawTarget,
+                'filter-name' => $this->option('filter-name') ?: null,
+                'repo' => array_map(fn ($m) => $m['path'], $matches),
+                'stop-ddev' => ! $keepDdevRunning,
+                'no-ssh-auth' => (bool) $this->option('no-ssh-auth'),
+                'craft-command' => $craftCommandLine,
+                'crawl-repo' => $crawlPaths,
+                'no-crawl' => empty($crawlPaths),
+                'crawler-command' => $crawlerCommandLine,
+                'composer-sweep' => $sweepPatterns,
+                'no-composer-sweep' => empty($sweepPatterns),
+                'commit' => $commit,
+                'no-commit' => ! $commit,
+                'push' => $push,
+                'no-push' => ! $push,
+                'yes' => true,
+            ]);
+        }
 
         if (! $this->option('no-ssh-auth')) {
             $this->ensureDdevSshAuth();

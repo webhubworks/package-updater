@@ -42,7 +42,8 @@ class UpdateAllCommand extends Command
         {--no-push : Skip the end-of-run push step (skips the prompt)}
         {--open : After the run, open every repo with uncommitted changes in GitKraken (skips the prompt)}
         {--no-open : Skip the end-of-run "open in GitKraken" prompt entirely}
-        {--yes : Skip the confirmation prompt}';
+        {--yes : Skip the confirmation prompt}
+        {--retrying : Set by `retry`, not meant to be passed by hand. Keeps logs/last-run.json untouched so the original run stays the one that is replayed.}';
 
     protected $description = 'Update a Composer package across all local repos that depend on it';
 
@@ -210,22 +211,26 @@ class UpdateAllCommand extends Command
             return self::SUCCESS;
         }
 
-        LastRunStore::save('update:all', ['package' => $package], [
-            'reps-dir' => $reposDir,
-            'parallel' => (string) $parallel,
-            'target-version' => $rawTarget,
-            'filter-name' => $this->option('filter-name') ?: null,
-            'update-package' => $updatePackage !== $package ? $updatePackage : null,
-            'with-all-dependencies' => $withAllDependencies,
-            'repo' => array_map(fn ($m) => $m['path'], $matches),
-            'stop-ddev' => ! $keepDdevRunning,
-            'no-ssh-auth' => (bool) $this->option('no-ssh-auth'),
-            'commit' => $commit,
-            'no-commit' => ! $commit,
-            'push' => $push,
-            'no-push' => ! $push,
-            'yes' => true,
-        ]);
+        // A replay leaves the stored run alone, so repeated `retry` calls
+        // keep replaying the original run instead of a narrowed copy.
+        if (! $this->option('retrying')) {
+            LastRunStore::save('update:all', ['package' => $package], [
+                'reps-dir' => $reposDir,
+                'parallel' => (string) $parallel,
+                'target-version' => $rawTarget,
+                'filter-name' => $this->option('filter-name') ?: null,
+                'update-package' => $updatePackage !== $package ? $updatePackage : null,
+                'with-all-dependencies' => $withAllDependencies,
+                'repo' => array_map(fn ($m) => $m['path'], $matches),
+                'stop-ddev' => ! $keepDdevRunning,
+                'no-ssh-auth' => (bool) $this->option('no-ssh-auth'),
+                'commit' => $commit,
+                'no-commit' => ! $commit,
+                'push' => $push,
+                'no-push' => ! $push,
+                'yes' => true,
+            ]);
+        }
 
         if (! $this->option('no-ssh-auth')) {
             $this->ensureDdevSshAuth();

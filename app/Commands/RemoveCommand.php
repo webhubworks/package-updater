@@ -37,7 +37,8 @@ class RemoveCommand extends Command
         {--no-push : Skip the end-of-run push step (skips the prompt)}
         {--open : After the run, open every repo with uncommitted changes in GitKraken (skips the prompt)}
         {--no-open : Skip the end-of-run "open in GitKraken" prompt entirely}
-        {--yes : Skip the confirmation prompt}';
+        {--yes : Skip the confirmation prompt}
+        {--retrying : Set by `retry`, not meant to be passed by hand. Keeps logs/last-run.json untouched so the original run stays the one that is replayed.}';
 
     protected $description = 'Remove a Composer package from every local repo that directly requires it';
 
@@ -149,17 +150,21 @@ class RemoveCommand extends Command
             return self::SUCCESS;
         }
 
-        LastRunStore::save('remove', ['package' => $package], [
-            'reps-dir' => $reposDir,
-            'parallel' => (string) $parallel,
-            'filter-name' => $this->option('filter-name') ?: null,
-            'repo' => array_map(fn ($p) => $p['path'], $plans),
-            'stop-ddev' => ! $keepDdevRunning,
-            'no-ssh-auth' => (bool) $this->option('no-ssh-auth'),
-            'push' => $push,
-            'no-push' => ! $push,
-            'yes' => true,
-        ]);
+        // A replay leaves the stored run alone, so repeated `retry` calls
+        // keep replaying the original run instead of a narrowed copy.
+        if (! $this->option('retrying')) {
+            LastRunStore::save('remove', ['package' => $package], [
+                'reps-dir' => $reposDir,
+                'parallel' => (string) $parallel,
+                'filter-name' => $this->option('filter-name') ?: null,
+                'repo' => array_map(fn ($p) => $p['path'], $plans),
+                'stop-ddev' => ! $keepDdevRunning,
+                'no-ssh-auth' => (bool) $this->option('no-ssh-auth'),
+                'push' => $push,
+                'no-push' => ! $push,
+                'yes' => true,
+            ]);
+        }
 
         if (! $this->option('no-ssh-auth')) {
             $this->ensureDdevSshAuth();
