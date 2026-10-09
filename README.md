@@ -211,6 +211,14 @@ through a batch in chunks — already-up-to-date repos are skipped by the
 target-version filter, so each retry picks up where the previous one left
 off.
 
+Without a target version (e.g. `--maintenance`, which updates `all`)
+nothing is filtered, so a plain `retry` processes every repo again. Pass
+`--failed` to replay only against the repos marked failed in
+`logs/last-results.json`. The crawler selection is narrowed to match. If
+the last run never reached its summary, the stored results don't describe
+it and `--failed` refuses to guess. The replay saves its own narrowed repo
+list, so a later plain `retry` stays on those repos too.
+
 ### `open`
 
 Opens repos from the most recent run in GitKraken (one tab per repo via
