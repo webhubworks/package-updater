@@ -593,6 +593,17 @@ class UpdateAllCommand extends Command
             }
         }
 
+        $withNotes = array_values(array_filter($results, fn (RepoUpdateResult $r) => $r->notes !== []));
+        if (! empty($withNotes)) {
+            note('Notes per repo:');
+            foreach ($withNotes as $r) {
+                $this->line('  <options=bold>'.RepoName::for($r->repoPath).'</>');
+                foreach ($r->notes as $line) {
+                    $this->line("    - {$line}");
+                }
+            }
+        }
+
         if ($belowTargetCount > 0) {
             warning(sprintf(
                 '%d repo(s) ended up below target version %s — composer could not satisfy a higher version given the constraints. Investigate parent dependencies.',
@@ -607,7 +618,7 @@ class UpdateAllCommand extends Command
         ));
         if (! empty($testFailures)) {
             warning(sprintf(
-                '%d repo(s) had failing tests after `composer prep`:',
+                '%d repo(s) had failing tests (`composer prep` or browser tests):',
                 count($testFailures),
             ));
             foreach ($testFailures as $r) {

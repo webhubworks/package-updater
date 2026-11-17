@@ -18,7 +18,7 @@ class RetryCommand extends Command
     {
         $data = LastRunStore::load();
         if ($data === null) {
-            $this->error('No previous run found at '.LastRunStore::path().'. Run `update:all` or `update:craft` first.');
+            $this->error('No previous run found at '.LastRunStore::path().'. Run `update:all`, `update:craft`, or `update:npm` first.');
 
             return self::FAILURE;
         }

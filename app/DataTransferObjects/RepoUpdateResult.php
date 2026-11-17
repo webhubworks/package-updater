@@ -36,6 +36,8 @@ final readonly class RepoUpdateResult
         public bool $excluded = false,
         /** Set when a diverged branch was reset to origin under maintenance, e.g. "discarded 1 local commit". */
         public ?string $divergedReset = null,
+        /** @var list<string> Things a human should know that aren't failures, e.g. npm fixes skipped as a major update. */
+        public array $notes = [],
     ) {}
 
     public static function success(
@@ -60,6 +62,7 @@ final readonly class RepoUpdateResult
         bool $prepSkippedUnchanged = false,
         bool $crawlerSkippedUnchanged = false,
         ?string $divergedReset = null,
+        array $notes = [],
     ): self {
         return new self(
             repoPath: $path,
@@ -85,6 +88,7 @@ final readonly class RepoUpdateResult
             prepSkippedUnchanged: $prepSkippedUnchanged,
             crawlerSkippedUnchanged: $crawlerSkippedUnchanged,
             divergedReset: $divergedReset,
+            notes: $notes,
         );
     }
 
@@ -157,6 +161,7 @@ final readonly class RepoUpdateResult
             'crawlerSkippedUnchanged' => $this->crawlerSkippedUnchanged,
             'excluded' => $this->excluded,
             'divergedReset' => $this->divergedReset,
+            'notes' => $this->notes,
         ];
     }
 
@@ -189,6 +194,7 @@ final readonly class RepoUpdateResult
             crawlerSkippedUnchanged: (bool) ($data['crawlerSkippedUnchanged'] ?? false),
             excluded: (bool) ($data['excluded'] ?? false),
             divergedReset: $data['divergedReset'] ?? null,
+            notes: is_array($data['notes'] ?? null) ? array_values($data['notes']) : [],
         );
     }
 }

@@ -60,6 +60,8 @@ final class UserConfig
         if (@file_put_contents($path, $json."\n") === false) {
             throw new \RuntimeException("Could not write config file: {$path}");
         }
+        // Holds the Slack webhook and the Panoptikum token, so keep it private.
+        @chmod($path, 0600);
     }
 
     public static function getReposDir(): ?string
@@ -133,6 +135,32 @@ final class UserConfig
     {
         $data = self::load();
         $data['slack_webhook_url'] = is_string($url) ? trim($url) : '';
+        self::save($data);
+    }
+
+    public static function getPanoptikumUrl(): ?string
+    {
+        $value = self::load()['panoptikum_url'] ?? null;
+
+        return is_string($value) && $value !== '' ? rtrim($value, '/') : null;
+    }
+
+    public static function getPanoptikumToken(): ?string
+    {
+        $value = self::load()['panoptikum_token'] ?? null;
+
+        return is_string($value) && $value !== '' ? $value : null;
+    }
+
+    public static function setPanoptikum(?string $url, ?string $token): void
+    {
+        $data = self::load();
+        if ($url !== null) {
+            $data['panoptikum_url'] = rtrim(trim($url), '/');
+        }
+        if ($token !== null) {
+            $data['panoptikum_token'] = trim($token);
+        }
         self::save($data);
     }
 }

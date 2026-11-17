@@ -115,7 +115,7 @@ final class UpdateRepoAction
         return $transcriptPath === null ? $result : self::attachTranscript($result, $transcriptPath);
     }
 
-    private static function attachTranscript(RepoUpdateResult $result, string $path): RepoUpdateResult
+    public static function attachTranscript(RepoUpdateResult $result, string $path): RepoUpdateResult
     {
         $data = $result->toArray();
         $data['transcriptPath'] = $path;
@@ -147,106 +147,11 @@ final class UpdateRepoAction
                 "{$updatePackage} not present in composer.lock",
             );
         }
-        $status = self::run(['git', 'status', '--porcelain'], $repoPath, 120, $onProgress, 'git status', stream: false);
-        if (! $status->isSuccessful()) {
-            return self::fail($repoPath, null, 'git status', $status);
+        $prepared = self::prepareBranch($repoPath, $onProgress, $resetIfDirty, $resetIfDiverged);
+        if ($prepared instanceof RepoUpdateResult) {
+            return $prepared;
         }
-
-        // Refresh the remote-tracking refs before choosing a branch. A repo
-        // that was cloned (or last fetched) before `develop` was created has no
-        // local trace of it, so pickBranch() would fall through to `main` and
-        // the whole update would land on the wrong branch. --prune drops refs
-        // for branches that no longer exist on origin, so a stale ref can't win
-        // either. A failed fetch is fatal on purpose: without current refs the
-        // branch choice is a guess, and the `git pull` further down would hit
-        // the same unreachable remote anyway. The fetch, defaultBranch() and
-        // pickBranch() only read and update refs, never the working tree, so
-        // they run ahead of the dirty-repo reset: the exclusion check needs the
-        // branch before anything destructive happens.
-        $fetch = self::run(['git', 'fetch', '--prune', 'origin'], $repoPath, 300, $onProgress, 'git fetch --prune origin', stream: false);
-        if (! $fetch->isSuccessful()) {
-            return self::fail($repoPath, null, 'git fetch --prune origin', $fetch);
-        }
-
-        // Ask origin which branch is its default. A repo that was renamed from
-        // `master` to `main` (or the other way round) usually keeps the old
-        // branch around, abandoned, and by name alone that corpse still looks
-        // like a long-lived branch. The default tells the two apart, so both
-        // the checkout below and the ahead-guard further down ignore every
-        // other name in the default's tier.
-        $defaultBranch = self::defaultBranch($repoPath);
-
-        $branch = self::pickBranch($repoPath, $defaultBranch);
-        if ($branch === null) {
-            return RepoUpdateResult::failed($repoPath, 'no develop/staging/main/master branch found');
-        }
-
-        if (self::isExcluded($repoPath, $branch)) {
-            return self::excluded($repoPath, $branch, $onProgress);
-        }
-
-        $wasReset = false;
-        if (trim($status->getOutput()) !== '') {
-            if (! $resetIfDirty) {
-                return RepoUpdateResult::skipped($repoPath, 'uncommitted changes', hasUncommittedChanges: true);
-            }
-
-            $reset = self::resetDirtyRepo($repoPath, $onProgress);
-            if ($reset instanceof RepoUpdateResult) {
-                return $reset;
-            }
-            $wasReset = true;
-        }
-
-        // The commit the repo sat on before we touched it. Compared with HEAD
-        // again just before the crawler so a run that genuinely changed nothing
-        // can be told apart from one that pulled new commits or switched
-        // branch — see repoUntouched().
-        $baselineHead = self::currentHead($repoPath);
-
-        $checkout = self::run(['git', 'checkout', $branch], $repoPath, 120, $onProgress, "git checkout {$branch}");
-        if (! $checkout->isSuccessful()) {
-            return self::fail($repoPath, $branch, "git checkout {$branch}", $checkout);
-        }
-
-        // A local commit that never got pushed (usually a previous run whose
-        // push was held back) next to new commits on origin makes the
-        // fast-forward pull impossible. On the maintenance host such a commit
-        // is a leftover, so origin wins and the update rebuilds it on top.
-        $divergedReset = null;
-        if ($resetIfDiverged) {
-            $diverged = self::resetDivergedBranch($repoPath, $branch, $onProgress);
-            if ($diverged instanceof RepoUpdateResult) {
-                return $diverged;
-            }
-            if ($diverged !== null) {
-                $divergedReset = $diverged;
-                $wasReset = true;
-            }
-        }
-
-        if ($divergedReset === null) {
-            $pull = self::run(['git', 'pull', '--ff-only', 'origin', $branch], $repoPath, 600, $onProgress, "git pull --ff-only origin {$branch}");
-            if (! $pull->isSuccessful()) {
-                if (self::isMissingRemoteRef($pull)) {
-                    return self::diagnoseMissingRemoteBranch($repoPath, $branch, $pull, $onProgress);
-                }
-
-                return self::fail($repoPath, $branch, 'git pull', $pull);
-            }
-        }
-
-        // The ref check above already answered this for origin's tip. Checked
-        // again on the tree we now stand on as a safety net, before ddev or
-        // composer touch anything.
-        if (is_file($repoPath.'/'.self::ExcludeMarker)) {
-            return self::excluded($repoPath, $branch, $onProgress);
-        }
-
-        $aheadFailure = self::guardAgainstHigherBranchAhead($repoPath, $branch, $defaultBranch, $onProgress);
-        if ($aheadFailure !== null) {
-            return $aheadFailure;
-        }
+        ['branch' => $branch, 'wasReset' => $wasReset, 'baselineHead' => $baselineHead, 'divergedReset' => $divergedReset] = $prepared;
 
         $detectedStatus = self::ddevStatus($repoPath);
         $ddevWasAlreadyRunning = $detectedStatus === 'running';
@@ -452,6 +357,121 @@ final class UpdateRepoAction
             crawlerSkippedUnchanged: $crawlerSkippedUnchanged,
             divergedReset: $divergedReset,
         );
+    }
+
+    /**
+     * Bring the repo onto its lowest long-lived branch, current with origin:
+     * fetch, pick the branch, honour the `.nopu` marker, reset a dirty tree or
+     * a diverged branch when allowed, fast-forward, and refuse when a higher
+     * branch is ahead. Shared by the composer/craft flow and the npm flow.
+     *
+     * @param  callable(string, ?string, ?string): void|null  $onProgress
+     * @return RepoUpdateResult|array{branch: string, wasReset: bool, baselineHead: ?string, divergedReset: ?string}
+     */
+    public static function prepareBranch(string $repoPath, ?callable $onProgress, bool $resetIfDirty, bool $resetIfDiverged): RepoUpdateResult|array
+    {
+        $status = self::run(['git', 'status', '--porcelain'], $repoPath, 120, $onProgress, 'git status', stream: false);
+        if (! $status->isSuccessful()) {
+            return self::fail($repoPath, null, 'git status', $status);
+        }
+
+        // Refresh the remote-tracking refs before choosing a branch. A repo
+        // that was cloned (or last fetched) before `develop` was created has no
+        // local trace of it, so pickBranch() would fall through to `main` and
+        // the whole update would land on the wrong branch. --prune drops refs
+        // for branches that no longer exist on origin, so a stale ref can't win
+        // either. A failed fetch is fatal on purpose: without current refs the
+        // branch choice is a guess, and the `git pull` further down would hit
+        // the same unreachable remote anyway. The fetch, defaultBranch() and
+        // pickBranch() only read and update refs, never the working tree, so
+        // they run ahead of the dirty-repo reset: the exclusion check needs the
+        // branch before anything destructive happens.
+        $fetch = self::run(['git', 'fetch', '--prune', 'origin'], $repoPath, 300, $onProgress, 'git fetch --prune origin', stream: false);
+        if (! $fetch->isSuccessful()) {
+            return self::fail($repoPath, null, 'git fetch --prune origin', $fetch);
+        }
+
+        // Ask origin which branch is its default. A repo that was renamed from
+        // `master` to `main` (or the other way round) usually keeps the old
+        // branch around, abandoned, and by name alone that corpse still looks
+        // like a long-lived branch. The default tells the two apart, so both
+        // the checkout below and the ahead-guard further down ignore every
+        // other name in the default's tier.
+        $defaultBranch = self::defaultBranch($repoPath);
+
+        $branch = self::pickBranch($repoPath, $defaultBranch);
+        if ($branch === null) {
+            return RepoUpdateResult::failed($repoPath, 'no develop/staging/main/master branch found');
+        }
+
+        if (self::isExcluded($repoPath, $branch)) {
+            return self::excluded($repoPath, $branch, $onProgress);
+        }
+
+        $wasReset = false;
+        if (trim($status->getOutput()) !== '') {
+            if (! $resetIfDirty) {
+                return RepoUpdateResult::skipped($repoPath, 'uncommitted changes', hasUncommittedChanges: true);
+            }
+
+            $reset = self::resetDirtyRepo($repoPath, $onProgress);
+            if ($reset instanceof RepoUpdateResult) {
+                return $reset;
+            }
+            $wasReset = true;
+        }
+
+        // The commit the repo sat on before we touched it. Compared with HEAD
+        // again just before the crawler so a run that genuinely changed nothing
+        // can be told apart from one that pulled new commits or switched
+        // branch — see repoUntouched().
+        $baselineHead = self::currentHead($repoPath);
+
+        $checkout = self::run(['git', 'checkout', $branch], $repoPath, 120, $onProgress, "git checkout {$branch}");
+        if (! $checkout->isSuccessful()) {
+            return self::fail($repoPath, $branch, "git checkout {$branch}", $checkout);
+        }
+
+        // A local commit that never got pushed (usually a previous run whose
+        // push was held back) next to new commits on origin makes the
+        // fast-forward pull impossible. On the maintenance host such a commit
+        // is a leftover, so origin wins and the update rebuilds it on top.
+        $divergedReset = null;
+        if ($resetIfDiverged) {
+            $diverged = self::resetDivergedBranch($repoPath, $branch, $onProgress);
+            if ($diverged instanceof RepoUpdateResult) {
+                return $diverged;
+            }
+            if ($diverged !== null) {
+                $divergedReset = $diverged;
+                $wasReset = true;
+            }
+        }
+
+        if ($divergedReset === null) {
+            $pull = self::run(['git', 'pull', '--ff-only', 'origin', $branch], $repoPath, 600, $onProgress, "git pull --ff-only origin {$branch}");
+            if (! $pull->isSuccessful()) {
+                if (self::isMissingRemoteRef($pull)) {
+                    return self::diagnoseMissingRemoteBranch($repoPath, $branch, $pull, $onProgress);
+                }
+
+                return self::fail($repoPath, $branch, 'git pull', $pull);
+            }
+        }
+
+        // The ref check above already answered this for origin's tip. Checked
+        // again on the tree we now stand on as a safety net, before ddev or
+        // composer touch anything.
+        if (is_file($repoPath.'/'.self::ExcludeMarker)) {
+            return self::excluded($repoPath, $branch, $onProgress);
+        }
+
+        $aheadFailure = self::guardAgainstHigherBranchAhead($repoPath, $branch, $defaultBranch, $onProgress);
+        if ($aheadFailure !== null) {
+            return $aheadFailure;
+        }
+
+        return ['branch' => $branch, 'wasReset' => $wasReset, 'baselineHead' => $baselineHead, 'divergedReset' => $divergedReset];
     }
 
     /**
@@ -1046,7 +1066,7 @@ final class UpdateRepoAction
      *
      * @param  callable(string, ?string, ?string): void|null  $onProgress
      */
-    private static function pushBranch(string $repoPath, string $branch, ?callable $onProgress): bool
+    public static function pushBranch(string $repoPath, string $branch, ?callable $onProgress): bool
     {
         $push = self::run(
             ['git', 'push', 'origin', $branch],
@@ -1694,7 +1714,7 @@ final class UpdateRepoAction
         return null;
     }
 
-    private static function ddevStatus(string $repoPath): ?string
+    public static function ddevStatus(string $repoPath): ?string
     {
         $describe = self::run(['ddev', 'describe', '-j'], $repoPath, 30, null, '', stream: false);
         if (! $describe->isSuccessful()) {
@@ -2113,7 +2133,7 @@ final class UpdateRepoAction
      *                                        (the latter is run via Process::fromShellCommandline).
      * @param  callable(string, ?string, ?string): void|null  $onProgress
      */
-    private static function run(
+    public static function run(
         array|string $command,
         string $cwd,
         int $timeout = 120,
@@ -2198,7 +2218,7 @@ final class UpdateRepoAction
      *
      * @param  callable(string, ?string, ?string): void|null  $onProgress
      */
-    private static function runDdevStart(string $repoPath, ?callable $onProgress): Process
+    public static function runDdevStart(string $repoPath, ?callable $onProgress): Process
     {
         $maxAttempts = 3;
         $process = null;
@@ -2326,7 +2346,7 @@ final class UpdateRepoAction
         return $dir;
     }
 
-    private static function openTranscript(string $repoPath): ?string
+    public static function openTranscript(string $repoPath): ?string
     {
         $dir = self::logDir($repoPath, 'transcripts');
         if ($dir === null) {
@@ -2344,7 +2364,7 @@ final class UpdateRepoAction
         return $file;
     }
 
-    private static function closeTranscript(): void
+    public static function closeTranscript(): void
     {
         if (self::$transcriptHandle === null) {
             return;
@@ -2382,7 +2402,7 @@ final class UpdateRepoAction
         @fwrite(self::$transcriptHandle, "\n(exit: ".($code ?? '?').")\n");
     }
 
-    private static function fail(string $repoPath, ?string $branch, string $step, Process $process): RepoUpdateResult
+    public static function fail(string $repoPath, ?string $branch, string $step, Process $process): RepoUpdateResult
     {
         $logPath = self::writeLog($repoPath, $step, $process);
         $hint = self::hintFor($process);
@@ -2452,7 +2472,7 @@ final class UpdateRepoAction
         return null;
     }
 
-    private static function writeLog(string $repoPath, string $step, Process $process): ?string
+    public static function writeLog(string $repoPath, string $step, Process $process): ?string
     {
         $dir = self::logDir($repoPath);
         if ($dir === null) {

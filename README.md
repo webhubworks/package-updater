@@ -203,9 +203,67 @@ its removal, even though the server's own checkout is still stale. An
 untracked `.nopu` on one machine also works, as a local override that
 never leaves that machine.
 
+### `update:npm`
+
+Applies the npm fixes that Panoptikum lists, and nothing else. Panoptikum
+decides what needs an update: open `immediate` or `monitor` npm threats on
+production cells, merged per repository. `pu update:npm` reads that list
+from Panoptikum's `GET /api/v1/npm-updates` and works through every local
+repo that appears in it. Configure the endpoint first, see
+[Panoptikum](#panoptikum-npm-updates).
+
+A local folder matches a Panoptikum repository by its composer `name`, or,
+without a `composer.json`, by the lowercased `owner/repo` of its `origin`
+remote. That's the same key panoptikum-cell reports, so Node and Nuxt apps
+match too. The walker considers any git folder with a `package-lock.json`.
+A key that appears in more than one local folder (a generic composer name
+such as `laravel/laravel`) matches none of them, and the run lists it.
+
+For each repo, the command does the following:
+
+1. Prepares the branch exactly like `update:craft`: fetch, lowest
+   long-lived branch, `.nopu`, the higher-branch guard, and under
+   `--maintenance` the reset of dirty or diverged repos.
+2. Skips the repo when it has a `yarn.lock`.
+3. Updates only fixes on the installed caret line (same major, or same
+   minor below 1.0). A fix that needs a new major, and a package Panoptikum
+   reports as not fixable, are only listed in the run notes.
+4. Runs `npm update <packages> --ignore-scripts --before=<7 days ago>`, so
+   install scripts never run and only releases older than a week get in.
+   `--before` works on every npm version.
+5. Adds an `overrides` entry (`"<package>": "^<fixed>"`) to `package.json`
+   when a transitive package is still below its fix because a parent holds
+   it back, and installs again.
+6. Checks the result against Panoptikum's blocked versions. A package that
+   lands inside a blocked range is dropped from the update and noted as
+   "blocked by WBHB-xxxx". The other packages still update.
+7. Gates the result: `npm ci --ignore-scripts`, `npm run build` when the
+   project has a build script, `ddev browser-test` when
+   `.ddev/commands/web/browser-test` exists, then the site-crawler.
+   `composer prep` doesn't run.
+8. Commits only `package-lock.json`, plus `package.json` when an override
+   was added, as `npm security updates`. The body lists each change with
+   its relevance and advisories, the source files that import a changed
+   package (for a transitive package, the files that import its direct
+   parent), and a GitHub compare link per changed direct dependency.
+9. Pushes only when the tests and the crawl were clean.
+
+Repos with a `.ddev/config.yaml` run `ddev npm`. Other repos, such as
+Node apps, run the host's `npm` and get no crawl.
+
+```bash
+pu update:npm --dry-run                  # list repos and the packages Panoptikum wants updated
+pu update:npm --repo=$HOME/reps/mesh     # one repo, interactive
+pu update:npm --maintenance              # dedicated server: commit, push, Slack summary
+```
+
+It takes the same flags as `update:craft`, except the handle,
+`--target-version`, `--craft-command`, and the composer sweep.
+`--filter-name=` matches the Panoptikum key instead of the composer name.
+
 ### `retry`
 
-Re-runs the most recent `update:all` or `update:craft` non-interactively
+Re-runs the most recent `update:all`, `update:craft`, or `update:npm` non-interactively
 using the answers persisted in `logs/last-run.json`. Useful for working
 through a batch in chunks — already-up-to-date repos are skipped by the
 target-version filter, so each retry picks up where the previous one left
@@ -295,6 +353,22 @@ The message posts under the Slack app's own name and icon (the app the
 webhook belongs to). Slack ignores per-message sender overrides for
 app-based webhooks, so rename the Slack app itself if you want a
 different display name.
+
+### Panoptikum (npm updates)
+
+`pu update:npm` reads its work list from Panoptikum. Save the base URL and
+the token once:
+
+```bash
+pu setup --panoptikum-url=https://panoptikum.example --panoptikum-token=<token>
+```
+
+The token is Panoptikum's `PANOPTIKUM_PACKAGE_UPDATER_TOKEN`, stored in the
+1Password vault "Environment Secrets" as "Panoptikum package-updater
+token". Both values go into `~/.config/package-updater/config.json`, which
+the tool keeps readable for your user only. Panoptikum also checks the
+caller's IP address, so the machine that runs the command must be on its
+allowlist.
 
 ### Git credentials (HTTPS remotes)
 

@@ -81,7 +81,7 @@ final class BuildMaintenanceSlackMessage
             // run was error-free, so there is nothing to flag here).
             if ($r->committed && $r->pushed) {
                 $count = count($r->packageUpdates);
-                $pushed[] = self::withDivergedReset(sprintf('• *%s* - %d update%s', $name, $count, $count === 1 ? '' : 's'), $r);
+                $pushed[] = self::withNotes(self::withDivergedReset(sprintf('• *%s* - %d update%s', $name, $count, $count === 1 ? '' : 's'), $r), $r);
 
                 continue;
             }
@@ -92,7 +92,7 @@ final class BuildMaintenanceSlackMessage
             if ($hasChanges) {
                 $state = $r->committed ? 'committed, not pushed' : 'uncommitted changes';
                 $reason = empty($issues) ? $state : sprintf('%s (%s)', $state, implode(', ', $issues));
-                $needsReview[] = self::withCrawlerUrls(self::withDivergedReset(sprintf('• *%s* - %s', $name, $reason), $r), $r);
+                $needsReview[] = self::withNotes(self::withCrawlerUrls(self::withDivergedReset(sprintf('• *%s* - %s', $name, $reason), $r), $r), $r);
 
                 continue;
             }
@@ -111,6 +111,14 @@ final class BuildMaintenanceSlackMessage
             // the "up to date" count either.
             if ($r->divergedReset !== null) {
                 $failed[] = self::withDivergedReset(sprintf('• *%s* - up to date', $name), $r);
+
+                continue;
+            }
+
+            // Nothing changed, but the run left something to read, such as an
+            // npm fix that needs a major update. That must not vanish either.
+            if ($r->notes !== []) {
+                $failed[] = self::withNotes(sprintf('• *%s* - nothing updated', $name), $r);
 
                 continue;
             }
@@ -142,7 +150,7 @@ final class BuildMaintenanceSlackMessage
         $blocks = [
             [
                 'type' => 'header',
-                'text' => ['type' => 'plain_text', 'text' => '📦 Craft maintenance summary', 'emoji' => true],
+                'text' => ['type' => 'plain_text', 'text' => '📦 '.self::title($handle), 'emoji' => true],
             ],
             [
                 'type' => 'context',
@@ -165,7 +173,7 @@ final class BuildMaintenanceSlackMessage
         return [
             'username' => self::SENDER_NAME,
             'icon_emoji' => self::SENDER_ICON,
-            'text' => sprintf('Craft maintenance summary: %s', $summary),
+            'text' => sprintf('%s: %s', self::title($handle), $summary),
             'blocks' => $blocks,
         ];
     }
@@ -196,6 +204,27 @@ final class BuildMaintenanceSlackMessage
         }
 
         return $issues;
+    }
+
+    private static function title(string $handle): string
+    {
+        return $handle === 'npm' ? 'npm maintenance summary' : 'Craft maintenance summary';
+    }
+
+    /**
+     * Append the run's notes (npm majors skipped, blocked versions, screens
+     * to check) as indented sub-lines, capped like the crawler URLs.
+     */
+    private static function withNotes(string $line, RepoUpdateResult $r): string
+    {
+        foreach (array_slice($r->notes, 0, self::MAX_CRAWLER_URLS) as $note) {
+            $line .= "\n    ".$note;
+        }
+        if (count($r->notes) > self::MAX_CRAWLER_URLS) {
+            $line .= sprintf("\n    +%d more", count($r->notes) - self::MAX_CRAWLER_URLS);
+        }
+
+        return $line;
     }
 
     /**

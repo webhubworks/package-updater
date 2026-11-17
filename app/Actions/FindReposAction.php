@@ -152,19 +152,21 @@ final class FindReposAction
     }
 
     /**
-     * Walk $reposDir and return paths that look like repo roots (contain a
-     * composer.lock). Descends into subdirectories that aren't repos
-     * themselves, so grouping folders like `~/reps/my7steps/<repo>` work.
+     * Walk $reposDir and return paths that look like repo roots (contain one
+     * of $markerFiles, a composer.lock by default). Descends into
+     * subdirectories that aren't repos themselves, so grouping folders like
+     * `~/reps/my7steps/<repo>` work.
      *
+     * @param  list<string>  $markerFiles
      * @return list<string>
      */
-    public static function collectRepoDirs(string $reposDir, int $maxDepth = 4): array
+    public static function collectRepoDirs(string $reposDir, int $maxDepth = 4, array $markerFiles = ['composer.lock']): array
     {
         $skip = ['vendor', 'node_modules', '.git', '.idea', '.vscode'];
         $repos = [];
 
-        $walk = function (string $dir, int $depth) use (&$walk, &$repos, $skip, $maxDepth): void {
-            if (is_file($dir.'/composer.lock')) {
+        $walk = function (string $dir, int $depth) use (&$walk, &$repos, $skip, $maxDepth, $markerFiles): void {
+            if (array_filter($markerFiles, fn (string $file) => is_file($dir.'/'.$file)) !== []) {
                 if (file_exists($dir.'/.git') && ! self::isCraftPluginRepo($dir)) {
                     $repos[] = $dir;
                 }

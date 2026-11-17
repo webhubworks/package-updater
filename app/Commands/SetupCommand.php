@@ -16,7 +16,9 @@ class SetupCommand extends Command
         {--composer-sweep=* : Set the composer-sweep allowlist non-interactively (repeatable, fnmatch patterns).}
         {--no-composer-sweep : Persist an empty sweep allowlist (sweep disabled by default).}
         {--slack-webhook-url= : Set the Slack incoming-webhook URL non-interactively (used by --maintenance runs to post a summary).}
-        {--no-slack : Persist an empty Slack webhook (notifications disabled).}';
+        {--no-slack : Persist an empty Slack webhook (notifications disabled).}
+        {--panoptikum-url= : Set the Panoptikum base URL that `update:npm` reads its work list from.}
+        {--panoptikum-token= : Set the bearer token for Panoptikum\'s npm-updates endpoint (PANOPTIKUM_PACKAGE_UPDATER_TOKEN there).}';
 
     protected $description = 'Configure package-updater (repos directory + composer-sweep allowlist + Slack webhook, stored in ~/.config/package-updater)';
 
@@ -26,6 +28,7 @@ class SetupCommand extends Command
         if ($reposDirHandled !== null) {
             $this->handleSweepNonInteractive();
             $slack = $this->handleSlackNonInteractive();
+            $this->handlePanoptikumNonInteractive();
             note('Config file: '.UserConfig::path());
 
             return $reposDirHandled === self::SUCCESS && $slack !== self::FAILURE
@@ -37,7 +40,8 @@ class SetupCommand extends Command
         // --repos-dir: update just those settings and exit.
         $sweepHandled = $this->handleSweepNonInteractive();
         $slack = $this->handleSlackNonInteractive();
-        if ($sweepHandled || $slack !== null) {
+        $panoptikumHandled = $this->handlePanoptikumNonInteractive();
+        if ($sweepHandled || $slack !== null || $panoptikumHandled) {
             note('Config file: '.UserConfig::path());
 
             return $slack === self::FAILURE ? self::FAILURE : self::SUCCESS;
@@ -133,6 +137,31 @@ class SetupCommand extends Command
         }
 
         return false;
+    }
+
+    /**
+     * Apply --panoptikum-url / --panoptikum-token when set. Returns true when
+     * either flag was provided. The token is never echoed back.
+     */
+    private function handlePanoptikumNonInteractive(): bool
+    {
+        $url = $this->option('panoptikum-url');
+        $token = $this->option('panoptikum-token');
+        $url = is_string($url) && $url !== '' ? $url : null;
+        $token = is_string($token) && $token !== '' ? $token : null;
+        if ($url === null && $token === null) {
+            return false;
+        }
+
+        UserConfig::setPanoptikum($url, $token);
+        if ($url !== null) {
+            info('Saved Panoptikum URL: '.UserConfig::getPanoptikumUrl());
+        }
+        if ($token !== null) {
+            info('Saved Panoptikum token.');
+        }
+
+        return true;
     }
 
     private function promptForSweepAllowlist(): void

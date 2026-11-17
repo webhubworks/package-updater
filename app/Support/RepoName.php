@@ -30,6 +30,23 @@ final class RepoName
         return self::$cache[$repoPath] ??= self::resolve($repoPath);
     }
 
+    /**
+     * The key Panoptikum stores as a cell's `repository_name`: the
+     * composer.json "name", else the origin's owner/repo. Mirrors
+     * panoptikum-cell's DataGrabber::getProjectData(), lowercased because
+     * the npm-updates endpoint is matched case-insensitively.
+     */
+    public static function panoptikumKey(string $repoPath): string
+    {
+        $composerJson = rtrim($repoPath, '/').'/composer.json';
+        $composer = is_file($composerJson) ? json_decode((string) file_get_contents($composerJson), true) : null;
+        if (is_array($composer) && is_string($composer['name'] ?? null) && $composer['name'] !== '') {
+            return strtolower($composer['name']);
+        }
+
+        return strtolower(self::for($repoPath));
+    }
+
     private static function resolve(string $repoPath): string
     {
         $fallback = basename($repoPath);
