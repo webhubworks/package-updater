@@ -375,6 +375,15 @@ final class UpdateRepoAction
             return self::fail($repoPath, null, 'git status', $status);
         }
 
+        // A local marker on this machine excludes the repo before any network
+        // call. Some git servers ban the office IP after failed logins, so a
+        // repo without working CLI credentials must not even be fetched.
+        if (self::hasLocalExcludeMarker($repoPath)) {
+            $current = self::run(['git', 'branch', '--show-current'], $repoPath, 30, null, '', stream: false);
+
+            return self::excluded($repoPath, trim($current->getOutput()), $onProgress);
+        }
+
         // Refresh the remote-tracking refs before choosing a branch. A repo
         // that was cloned (or last fetched) before `develop` was created has no
         // local trace of it, so pickBranch() would fall through to `main` and
@@ -491,11 +500,20 @@ final class UpdateRepoAction
             return true;
         }
 
-        if (! is_file($repoPath.'/'.$marker)) {
+        return self::hasLocalExcludeMarker($repoPath);
+    }
+
+    /**
+     * An untracked `.nopu` in the working tree: a local override on this
+     * machine, honoured even before the fetch.
+     */
+    private static function hasLocalExcludeMarker(string $repoPath): bool
+    {
+        if (! is_file($repoPath.'/'.self::ExcludeMarker)) {
             return false;
         }
 
-        $tracked = self::run(['git', 'ls-files', '--error-unmatch', '--', $marker], $repoPath, 30, null, '', stream: false);
+        $tracked = self::run(['git', 'ls-files', '--error-unmatch', '--', self::ExcludeMarker], $repoPath, 30, null, '', stream: false);
 
         return ! $tracked->isSuccessful();
     }

@@ -20,6 +20,8 @@ final class UpdateNpmRepoAction
 
     public const CommitTitle = 'npm security updates';
 
+    public const LockConversionCommitTitle = 'chore: convert package-lock.json to lockfileVersion 2';
+
     /** Folders scanned for imports when listing the screens to check. */
     private const ScreenDirs = ['resources/js', 'resources/views', 'src', 'pages', 'components', 'layouts', 'app'];
 
@@ -87,8 +89,59 @@ final class UpdateNpmRepoAction
         $originalLock = @file_get_contents($lockPath);
         $originalPackageJson = @file_get_contents($packageJsonPath);
         $lockBefore = is_string($originalLock) ? json_decode($originalLock, true) : null;
-        if (! is_array($lockBefore) || ! is_string($originalPackageJson) || ! is_array($lockBefore['packages'] ?? null)) {
-            return RepoUpdateResult::failed($repoPath, 'package.json or a package-lock.json with lockfileVersion 2 or later is missing', $branch);
+        if (! is_array($lockBefore) || ! is_string($originalPackageJson)) {
+            return RepoUpdateResult::failed($repoPath, 'package.json or package-lock.json is missing or unreadable', $branch);
+        }
+
+        $useDdev = is_file($repoPath.'/.ddev/config.yaml');
+        $npm = $useDdev ? ['ddev', 'npm'] : ['npm'];
+        $npmFlags = ['--ignore-scripts', '--before='.date('Y-m-d', strtotime('-'.self::MinReleaseAgeDays.' days')), '--no-audit', '--no-fund'];
+
+        // ddev only starts once npm has to run, so a repo with nothing to do stays down.
+        $ddevWasAlreadyRunning = null;
+        $ensureDdev = function () use ($useDdev, $repoPath, $branch, $onProgress, &$ddevWasAlreadyRunning): ?RepoUpdateResult {
+            if (! $useDdev || $ddevWasAlreadyRunning !== null) {
+                return null;
+            }
+            $ddevWasAlreadyRunning = UpdateRepoAction::ddevStatus($repoPath) === 'running';
+            if ($ddevWasAlreadyRunning) {
+                return null;
+            }
+            $start = UpdateRepoAction::runDdevStart($repoPath, $onProgress);
+
+            return $start->isSuccessful() ? null : UpdateRepoAction::fail($repoPath, $branch, 'ddev start', $start);
+        };
+        $stopDdev = function () use ($useDdev, $keepDdevRunning, $repoPath, $onProgress, &$ddevWasAlreadyRunning): void {
+            if ($useDdev && ! $keepDdevRunning && $ddevWasAlreadyRunning === false) {
+                UpdateRepoAction::run(['ddev', 'stop'], $repoPath, 300, $onProgress, 'ddev stop');
+            }
+        };
+
+        // A lockfile v1 has no "packages" map. Convert it first; the conversion
+        // keeps the installed versions and gets its own commit, checked by the
+        // same gate as the update. Version 2, not 3: a server still on npm 6
+        // (Node 10, klinikrente.de) reads v2 but fails `npm ci` on v3, and
+        // npm 7 and later keep a v2 lockfile at v2.
+        $legacyLock = null;
+        if (self::needsLockConversion($lockBefore)) {
+            $failure = $ensureDdev();
+            if ($failure !== null) {
+                return $failure;
+            }
+
+            $convert = UpdateRepoAction::run([...$npm, 'install', '--package-lock-only', '--lockfile-version=2', '--ignore-scripts', '--no-audit', '--no-fund'], $repoPath, 1800, $onProgress, implode(' ', [...$npm, 'install', '--package-lock-only']).' (convert lockfile v1)');
+            $converted = (string) @file_get_contents($lockPath);
+            $convertedData = json_decode($converted, true);
+            if (! $convert->isSuccessful() || ! is_array($convertedData) || self::needsLockConversion($convertedData)) {
+                file_put_contents($lockPath, $originalLock);
+                $stopDdev();
+
+                return UpdateRepoAction::fail($repoPath, $branch, 'convert package-lock.json from lockfileVersion 1', $convert);
+            }
+
+            $legacyLock = $originalLock;
+            $originalLock = $converted;
+            $lockBefore = $convertedData;
         }
 
         $versionsBefore = self::lockVersions($lockBefore);
@@ -96,6 +149,11 @@ final class UpdateNpmRepoAction
         ['update' => $toUpdate, 'notes' => $notes] = self::planUpdates($packages, $versionsBefore, $direct);
 
         if ($toUpdate === []) {
+            if ($legacyLock !== null) {
+                // A conversion on its own isn't worth a commit; it comes with the next update.
+                file_put_contents($lockPath, $legacyLock);
+                $stopDdev();
+            }
             if ($onProgress !== null) {
                 $onProgress('step-start', null, 'nothing to update within the allowed ranges');
             }
@@ -103,25 +161,13 @@ final class UpdateNpmRepoAction
             return RepoUpdateResult::success($repoPath, $branch, false, divergedReset: $divergedReset, notes: $notes);
         }
 
-        $useDdev = is_file($repoPath.'/.ddev/config.yaml');
-        $npm = $useDdev ? ['ddev', 'npm'] : ['npm'];
-        $npmFlags = ['--ignore-scripts', '--before='.date('Y-m-d', strtotime('-'.self::MinReleaseAgeDays.' days')), '--no-audit', '--no-fund'];
-
-        $ddevWasAlreadyRunning = false;
-        if ($useDdev) {
-            $ddevWasAlreadyRunning = UpdateRepoAction::ddevStatus($repoPath) === 'running';
-            if (! $ddevWasAlreadyRunning) {
-                $start = UpdateRepoAction::runDdevStart($repoPath, $onProgress);
-                if (! $start->isSuccessful()) {
-                    return UpdateRepoAction::fail($repoPath, $branch, 'ddev start', $start);
-                }
-            }
+        $failure = $ensureDdev();
+        if ($failure !== null) {
+            return $failure;
         }
-        $stopDdev = function () use ($useDdev, $keepDdevRunning, $ddevWasAlreadyRunning, $repoPath, $onProgress): void {
-            if ($useDdev && ! $keepDdevRunning && ! $ddevWasAlreadyRunning) {
-                UpdateRepoAction::run(['ddev', 'stop'], $repoPath, 300, $onProgress, 'ddev stop');
-            }
-        };
+        if ($legacyLock !== null) {
+            $notes[] = 'converted package-lock.json from lockfileVersion 1, committed separately';
+        }
         $restore = function () use ($lockPath, $packageJsonPath, $originalLock, $originalPackageJson): void {
             file_put_contents($lockPath, $originalLock);
             file_put_contents($packageJsonPath, $originalPackageJson);
@@ -190,6 +236,9 @@ final class UpdateNpmRepoAction
         $changes = $toUpdate === [] ? [] : self::diffVersions($versionsBefore, $versionsAfter);
         if ($changes === []) {
             $restore();
+            if ($legacyLock !== null) {
+                file_put_contents($lockPath, $legacyLock);
+            }
             $stopDdev();
 
             return RepoUpdateResult::success($repoPath, $branch, false, divergedReset: $divergedReset, notes: $notes);
@@ -221,7 +270,10 @@ final class UpdateNpmRepoAction
         }
 
         $committed = false;
-        if ($commit) {
+        if ($commit && $legacyLock !== null) {
+            $committed = self::commitLockConversion($repoPath, $lockPath, $packageJsonPath, $originalLock, $originalPackageJson, $onProgress);
+        }
+        if ($commit && ($legacyLock === null || $committed)) {
             $files = $overrides === [] ? ['package-lock.json'] : ['package-lock.json', 'package.json'];
             $add = UpdateRepoAction::run(['git', 'add', '--', ...$files], $repoPath, 120, $onProgress, 'git add '.implode(' ', $files));
             if ($add->isSuccessful()) {
@@ -277,11 +329,11 @@ final class UpdateNpmRepoAction
             return UpdateRepoAction::fail($repoPath, $branch, 'npm ci', $ci);
         }
 
-        $scripts = (array) (json_decode((string) @file_get_contents($repoPath.'/package.json'), true)['scripts'] ?? []);
-        if (isset($scripts['build'])) {
-            $build = UpdateRepoAction::run([...$npm, 'run', 'build'], $repoPath, 1800, $onProgress, implode(' ', [...$npm, 'run', 'build']));
+        $buildScript = self::buildScript((array) (json_decode((string) @file_get_contents($repoPath.'/package.json'), true)['scripts'] ?? []));
+        if ($buildScript !== null) {
+            $build = UpdateRepoAction::run([...$npm, 'run', $buildScript], $repoPath, 1800, $onProgress, implode(' ', [...$npm, 'run', $buildScript]));
             if (! $build->isSuccessful()) {
-                return UpdateRepoAction::fail($repoPath, $branch, 'npm run build (with --ignore-scripts installs)', $build);
+                return UpdateRepoAction::fail($repoPath, $branch, "npm run {$buildScript} (with --ignore-scripts installs)", $build);
             }
         }
 
@@ -364,6 +416,57 @@ final class UpdateNpmRepoAction
         }
 
         return ['update' => $update, 'notes' => $notes];
+    }
+
+    /**
+     * The production build script: `build` (Vite), else `production` or `prod`
+     * (Laravel Mix). Null when the project has none.
+     *
+     * @param  array<string, mixed>  $scripts
+     */
+    public static function buildScript(array $scripts): ?string
+    {
+        foreach (['build', 'production', 'prod'] as $name) {
+            if (isset($scripts[$name])) {
+                return $name;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Whether a lockfile predates lockfileVersion 2, which has no "packages" map.
+     *
+     * @param  array<string, mixed>  $lock
+     */
+    public static function needsLockConversion(array $lock): bool
+    {
+        return ! is_array($lock['packages'] ?? null);
+    }
+
+    /**
+     * Commits the converted lockfile on its own, before the update commit, so
+     * the format change and the version changes can be reviewed apart. The
+     * working tree is put back to the updated files afterwards.
+     *
+     * @param  callable(string, ?string, ?string): void|null  $onProgress
+     */
+    private static function commitLockConversion(string $repoPath, string $lockPath, string $packageJsonPath, string $convertedLock, string $originalPackageJson, ?callable $onProgress): bool
+    {
+        $updatedLock = (string) file_get_contents($lockPath);
+        $updatedPackageJson = (string) file_get_contents($packageJsonPath);
+
+        file_put_contents($lockPath, $convertedLock);
+        file_put_contents($packageJsonPath, $originalPackageJson);
+
+        $committed = UpdateRepoAction::run(['git', 'add', '--', 'package-lock.json'], $repoPath, 120, $onProgress, 'git add package-lock.json')->isSuccessful()
+            && UpdateRepoAction::run(['git', 'commit', '-m', self::LockConversionCommitTitle, '-m', 'Converted with `npm install --package-lock-only --lockfile-version=2`, which npm 6 can still read. The installed versions stay the same.'], $repoPath, 120, $onProgress, 'git commit (lockfile conversion)')->isSuccessful();
+
+        file_put_contents($lockPath, $updatedLock);
+        file_put_contents($packageJsonPath, $updatedPackageJson);
+
+        return $committed;
     }
 
     /**

@@ -201,7 +201,10 @@ The marker is read from origin's branch right after the fetch, so a
 marker a colleague just pushed takes effect on the next run, and so does
 its removal, even though the server's own checkout is still stale. An
 untracked `.nopu` on one machine also works, as a local override that
-never leaves that machine.
+never leaves that machine. The local marker is checked before the fetch,
+so the repo's remote is never contacted. Use it for a repo whose git
+server bans the office IP after failed logins, such as one where only
+GitKraken holds the credentials.
 
 ### `update:npm`
 
@@ -224,7 +227,13 @@ For each repo, the command does the following:
 1. Prepares the branch exactly like `update:craft`: fetch, lowest
    long-lived branch, `.nopu`, the higher-branch guard, and under
    `--maintenance` the reset of dirty or diverged repos.
-2. Skips the repo when it has a `yarn.lock`.
+2. Skips the repo when it has a `yarn.lock`. A `package-lock.json` with
+   `lockfileVersion` 1 is converted first with
+   `npm install --package-lock-only --lockfile-version=2`, which keeps the
+   installed versions. Version 2 because a server still on npm 6 reads it
+   but fails `npm ci` on version 3. The conversion gets its own commit,
+   `chore: convert package-lock.json to lockfileVersion 2`, ahead of the
+   update commit, and the gate checks both.
 3. Updates only fixes on the installed caret line (same major, or same
    minor below 1.0). A fix that needs a new major, and a package Panoptikum
    reports as not fixable, are only listed in the run notes.
@@ -237,8 +246,9 @@ For each repo, the command does the following:
 6. Checks the result against Panoptikum's blocked versions. A package that
    lands inside a blocked range is dropped from the update and noted as
    "blocked by WBHB-xxxx". The other packages still update.
-7. Gates the result: `npm ci --ignore-scripts`, `npm run build` when the
-   project has a build script, `ddev browser-test` when
+7. Gates the result: `npm ci --ignore-scripts`, the project's
+   production build (`npm run build`, else `production` or `prod` for
+   Laravel Mix), `ddev browser-test` when
    `.ddev/commands/web/browser-test` exists, then the site-crawler.
    `composer prep` doesn't run.
 8. Commits only `package-lock.json`, plus `package.json` when an override

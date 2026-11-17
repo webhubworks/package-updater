@@ -191,3 +191,14 @@ it('adds overrides without reformatting package.json', function () {
         "{\n  \"name\": \"app\",\n  \"scripts\": {},\n  \"dependencies\": {\n    \"axios\": \"^1.6.0\"\n  },\n  \"overrides\": {\n    \"form-data\": \"^4.0.4\"\n  }\n}\n"
     );
 });
+
+it('converts only lockfiles without a packages map', function () {
+    expect(UpdateNpmRepoAction::needsLockConversion(['lockfileVersion' => 1, 'dependencies' => []]))->toBeTrue()
+        ->and(UpdateNpmRepoAction::needsLockConversion(['lockfileVersion' => 3, 'packages' => ['' => []]]))->toBeFalse();
+});
+
+it('picks the production build script of Vite and Laravel Mix projects', function () {
+    expect(UpdateNpmRepoAction::buildScript(['dev' => 'vite', 'build' => 'vite build']))->toBe('build')
+        ->and(UpdateNpmRepoAction::buildScript(['dev' => 'mix', 'production' => 'mix --production', 'prod' => 'npm run production']))->toBe('production')
+        ->and(UpdateNpmRepoAction::buildScript(['dev' => 'mix']))->toBeNull();
+});
