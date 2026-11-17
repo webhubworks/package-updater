@@ -13,7 +13,7 @@ afterEach(function () {
     (new Process(['rm', '-rf', $this->repo]))->run();
 });
 
-it('skips a repo with a local .nopu before any network call', function () {
+it('skips a repo with a .nopu in its working tree before any network call', function (bool $committed) {
     $repo = $this->repo;
     foreach ([
         ['git', 'init', '-q', '-b', 'develop'],
@@ -26,10 +26,14 @@ it('skips a repo with a local .nopu before any network call', function () {
         (new Process($command, $repo))->mustRun();
     }
     touch($repo.'/.nopu');
+    if ($committed) {
+        (new Process(['git', 'add', '.nopu'], $repo))->mustRun();
+        (new Process(['git', 'commit', '-q', '-m', 'pause updates'], $repo))->mustRun();
+    }
 
     $result = UpdateRepoAction::prepareBranch($repo, null, resetIfDirty: false, resetIfDiverged: false);
 
     expect($result)->toBeInstanceOf(RepoUpdateResult::class)
         ->and($result->excluded)->toBeTrue()
         ->and($result->branch)->toBe('develop');
-});
+})->with(['untracked' => [false], 'committed' => [true]]);

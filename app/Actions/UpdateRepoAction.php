@@ -375,10 +375,12 @@ final class UpdateRepoAction
             return self::fail($repoPath, null, 'git status', $status);
         }
 
-        // A local marker on this machine excludes the repo before any network
-        // call. Some git servers ban the office IP after failed logins, so a
-        // repo without working CLI credentials must not even be fetched.
-        if (self::hasLocalExcludeMarker($repoPath)) {
+        // A marker in the working tree, committed or not, excludes the repo
+        // before any network call. Some git servers ban the office IP after
+        // failed logins, so a repo without working CLI credentials must not
+        // even be fetched. The price: a marker removed on origin only stops
+        // counting once someone pulls this checkout by hand.
+        if (is_file($repoPath.'/'.self::ExcludeMarker)) {
             $current = self::run(['git', 'branch', '--show-current'], $repoPath, 30, null, '', stream: false);
 
             return self::excluded($repoPath, trim($current->getOutput()), $onProgress);
@@ -490,6 +492,8 @@ final class UpdateRepoAction
      * just pushed counts, and one they just removed no longer does, even
      * while the stale local checkout still has it. An untracked marker in
      * the working tree counts too, as a local override on this machine.
+     * prepareBranch() checks the working tree before the fetch, though, so
+     * there a marker still in the checkout wins over origin.
      */
     private static function isExcluded(string $repoPath, string $branch): bool
     {
@@ -505,7 +509,7 @@ final class UpdateRepoAction
 
     /**
      * An untracked `.nopu` in the working tree: a local override on this
-     * machine, honoured even before the fetch.
+     * machine.
      */
     private static function hasLocalExcludeMarker(string $repoPath): bool
     {

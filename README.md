@@ -201,10 +201,14 @@ The marker is read from origin's branch right after the fetch, so a
 marker a colleague just pushed takes effect on the next run, and so does
 its removal, even though the server's own checkout is still stale. An
 untracked `.nopu` on one machine also works, as a local override that
-never leaves that machine. The local marker is checked before the fetch,
-so the repo's remote is never contacted. Use it for a repo whose git
-server bans the office IP after failed logins, such as one where only
-GitKraken holds the credentials.
+never leaves that machine.
+
+A marker that is already in the working tree, committed or not, is
+checked before the fetch, so the repo's remote is never contacted. That
+protects repos whose git server bans the office IP after failed logins,
+such as one where only GitKraken holds the credentials. The price: when
+a colleague removes a committed marker, a machine whose checkout still
+has it keeps skipping the repo until someone pulls it by hand.
 
 ### `update:npm`
 
