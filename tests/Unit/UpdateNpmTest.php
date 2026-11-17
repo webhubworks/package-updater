@@ -244,3 +244,27 @@ it('reads the Node version from .nvmrc and finds the matching nvm install', func
         ->and(UpdateNpmRepoAction::installedNodeDir($nvm, '1'))->toBeNull()
         ->and(UpdateNpmRepoAction::installedNodeDir($nvm, '12'))->toBeNull();
 });
+
+it('names which copy of a package a note is about', function () {
+    $lock = ['lockfileVersion' => 2, 'packages' => [
+        '' => ['dependencies' => ['axios' => '^1.7.8'], 'devDependencies' => ['browser-sync' => '^2.0.0']],
+        'node_modules/axios' => ['version' => '1.7.9'],
+        'node_modules/browser-sync' => ['version' => '2.29.3', 'dev' => true, 'dependencies' => ['localtunnel' => '^1.9.2']],
+        'node_modules/localtunnel' => ['version' => '1.9.2', 'dev' => true, 'dependencies' => ['axios' => '0.19.0']],
+        'node_modules/localtunnel/node_modules/axios' => ['version' => '0.19.0', 'dev' => true],
+    ]];
+    $direct = ['axios' => true, 'browser-sync' => true];
+
+    expect(UpdateNpmRepoAction::describeCopies('axios', ['0.19.0', '1.7.9'], $lock, $direct))
+        ->toBe('0.19.0 (dev, via browser-sync > localtunnel), 1.7.9');
+
+    $plan = UpdateNpmRepoAction::planUpdates(
+        [['name' => 'axios', 'fixed_version' => '1.8.2', 'fixable' => true]],
+        UpdateNpmRepoAction::lockVersions($lock),
+        $direct,
+        $lock,
+    );
+
+    expect($plan['update'])->toBe(['axios' => '1.8.2'])
+        ->and($plan['notes'])->toBe(['axios 0.19.0 (dev, via browser-sync > localtunnel) needs a major update to 1.8.2, skipped']);
+});

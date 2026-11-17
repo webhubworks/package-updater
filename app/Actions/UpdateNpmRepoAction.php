@@ -157,7 +157,7 @@ final class UpdateNpmRepoAction
 
         $versionsBefore = self::lockVersions($lockBefore);
         $direct = self::directDependencies((array) json_decode($originalPackageJson, true));
-        ['update' => $toUpdate, 'notes' => $notes] = self::planUpdates($packages, $versionsBefore, $direct);
+        ['update' => $toUpdate, 'notes' => $notes] = self::planUpdates($packages, $versionsBefore, $direct, $lockBefore);
 
         if ($toUpdate === []) {
             if ($legacyLock !== null) {
@@ -255,10 +255,12 @@ final class UpdateNpmRepoAction
             return RepoUpdateResult::success($repoPath, $branch, false, divergedReset: $divergedReset, notes: $notes);
         }
 
+        // Copies on another major line were already reported as skipped.
+        $lockUpdated = (array) json_decode((string) file_get_contents($lockPath), true);
         foreach ($toUpdate as $name => $fixed) {
-            $stillBelow = self::belowFix($versionsAfter[$name] ?? [], $fixed);
+            $stillBelow = self::belowFixOnSameLine($versionsAfter[$name] ?? [], $fixed);
             if ($stillBelow !== []) {
-                $notes[] = sprintf('%s still below %s (%s): the fix is younger than %d days, or package.json pins it', $name, $fixed, implode(', ', $stillBelow), self::MinReleaseAgeDays);
+                $notes[] = sprintf('%s %s is still below %s: the fix is younger than %d days, or package.json pins it', $name, self::describeCopies($name, $stillBelow, $lockUpdated, $direct), $fixed, self::MinReleaseAgeDays);
             }
         }
 
@@ -386,6 +388,53 @@ final class UpdateNpmRepoAction
     }
 
     /**
+     * Versions of a package with the copy each one is, for the run notes:
+     * `0.19.0 (dev, via browser-sync > localtunnel)`. A version the project
+     * requires itself at the top level gets no label.
+     *
+     * @param  list<string>  $versions
+     * @param  array<string, mixed>  $lock
+     * @param  array<string, true>  $direct
+     */
+    public static function describeCopies(string $name, array $versions, array $lock, array $direct): string
+    {
+        $described = [];
+        foreach ($versions as $version) {
+            $label = '';
+            foreach ((array) ($lock['packages'] ?? []) as $path => $entry) {
+                $segments = explode('node_modules/', (string) $path);
+                array_shift($segments);
+                $segments = array_map(fn (string $segment) => strtolower(rtrim($segment, '/')), $segments);
+                if (! is_array($entry) || end($segments) !== $name || ($entry['version'] ?? null) !== $version) {
+                    continue;
+                }
+
+                // The folders it's nested in, led by the direct dependency that pulls in the outermost one.
+                $chain = array_slice($segments, 0, -1);
+                $outermost = $chain[0] ?? $name;
+                if (! isset($direct[$outermost])) {
+                    // directParentsOf() is keyed by the direct dependency.
+                    $parent = array_key_first(self::directParentsOf([$outermost], $lock, $direct));
+                    if ($parent !== null) {
+                        $chain = [$parent, ...$chain];
+                    }
+                }
+
+                $parts = array_filter([
+                    ($entry['dev'] ?? false) ? 'dev' : null,
+                    $chain === [] ? null : 'via '.implode(' > ', $chain),
+                ]);
+                $label = $parts === [] ? '' : ' ('.implode(', ', $parts).')';
+
+                break;
+            }
+            $described[] = $version.$label;
+        }
+
+        return implode(', ', $described);
+    }
+
+    /**
      * Decide per endpoint package what this run does. Only installed versions
      * below the fix on the fix's own caret line get updated. A fix on a later
      * line is a major update, and a package Panoptikum can't fix is only
@@ -394,9 +443,10 @@ final class UpdateNpmRepoAction
      * @param  list<array<string, mixed>>  $packages
      * @param  array<string, list<string>>  $lockVersions
      * @param  array<string, true>  $direct
+     * @param  array<string, mixed>  $lock  The parsed lockfile, to name which copy of a package a note means.
      * @return array{update: array<string, string>, notes: list<string>}
      */
-    public static function planUpdates(array $packages, array $lockVersions, array $direct): array
+    public static function planUpdates(array $packages, array $lockVersions, array $direct, array $lock = []): array
     {
         $update = [];
         $notes = [];
@@ -426,7 +476,7 @@ final class UpdateNpmRepoAction
             $otherLine = array_values(array_diff($below, $sameLine));
 
             if ($otherLine !== []) {
-                $notes[] = sprintf('%s %s needs a major update to %s, skipped', $name, implode(', ', $otherLine), $fixed);
+                $notes[] = sprintf('%s %s needs a major update to %s, skipped', $name, self::describeCopies($name, $otherLine, $lock, $direct), $fixed);
             }
             if ($sameLine !== []) {
                 $update[$name] = $fixed;
