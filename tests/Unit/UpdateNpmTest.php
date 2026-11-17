@@ -202,3 +202,45 @@ it('picks the production build script of Vite and Laravel Mix projects', functio
         ->and(UpdateNpmRepoAction::buildScript(['dev' => 'mix', 'production' => 'mix --production', 'prod' => 'npm run production']))->toBe('production')
         ->and(UpdateNpmRepoAction::buildScript(['dev' => 'mix']))->toBeNull();
 });
+
+it('accepts a lockfile conversion only when no installed version changes', function () {
+    $legacy = ['lockfileVersion' => 1, 'dependencies' => [
+        'axios' => ['version' => '1.7.9', 'dependencies' => ['follow-redirects' => ['version' => '1.15.9']]],
+        'follow-redirects' => ['version' => '1.5.10'],
+        'my-fork' => ['version' => 'git+ssh://git@github.com/acme/my-fork.git#abc'],
+    ]];
+    $converted = ['lockfileVersion' => 2, 'packages' => [
+        '' => [],
+        'node_modules/axios' => ['version' => '1.7.9'],
+        'node_modules/axios/node_modules/follow-redirects' => ['version' => '1.15.9'],
+        'node_modules/follow-redirects' => ['version' => '1.5.10'],
+        'node_modules/my-fork' => ['version' => '2.0.0'],
+    ]];
+
+    expect(UpdateNpmRepoAction::conversionChanges($legacy, $converted))->toBe([])
+        ->and(UpdateNpmRepoAction::conversionChanges(
+            ['dependencies' => ['axios' => ['version' => '1.7.9']]],
+            ['packages' => ['node_modules/axios' => ['version' => '1.7.9']]],
+        ))->toBe([]);
+
+    $converted['packages']['node_modules/axios/node_modules/follow-redirects']['version'] = '1.16.3';
+    expect(UpdateNpmRepoAction::conversionChanges($legacy, $converted))->toBe(['follow-redirects']);
+});
+
+it('reads the Node version from .nvmrc and finds the matching nvm install', function () {
+    $repo = $this->root;
+    $nvm = $repo.'/nvm';
+    foreach (['v10.22.0', 'v22.1.0', 'v22.14.0', 'v8.17.0'] as $dir) {
+        mkdir($nvm.'/versions/node/'.$dir, 0777, true);
+    }
+
+    file_put_contents($repo.'/.nvmrc', "v10.22.0\n");
+    expect(UpdateNpmRepoAction::nvmrcVersion($repo))->toBe('10.22.0');
+
+    file_put_contents($repo.'/.nvmrc', 'lts/*');
+    expect(UpdateNpmRepoAction::nvmrcVersion($repo))->toBeNull()
+        ->and(UpdateNpmRepoAction::installedNodeDir($nvm, '10.22.0'))->toBe($nvm.'/versions/node/v10.22.0')
+        ->and(UpdateNpmRepoAction::installedNodeDir($nvm, '22'))->toBe($nvm.'/versions/node/v22.14.0')
+        ->and(UpdateNpmRepoAction::installedNodeDir($nvm, '1'))->toBeNull()
+        ->and(UpdateNpmRepoAction::installedNodeDir($nvm, '12'))->toBeNull();
+});

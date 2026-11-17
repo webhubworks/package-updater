@@ -139,6 +139,17 @@ final class UpdateNpmRepoAction
                 return UpdateRepoAction::fail($repoPath, $branch, 'convert package-lock.json from lockfileVersion 1', $convert);
             }
 
+            // The conversion skips the release-age window and the blocked
+            // versions, so it may only rewrite the format, never a version. A
+            // change means package.json and the old lockfile disagree.
+            $changed = self::conversionChanges($lockBefore, $convertedData);
+            if ($changed !== []) {
+                file_put_contents($lockPath, $originalLock);
+                $stopDdev();
+
+                return RepoUpdateResult::failed($repoPath, 'converting package-lock.json from lockfileVersion 1 would change installed versions ('.implode(', ', array_slice($changed, 0, 5)).'), package.json and the lockfile disagree', $branch);
+            }
+
             $legacyLock = $originalLock;
             $originalLock = $converted;
             $lockBefore = $convertedData;
@@ -251,7 +262,13 @@ final class UpdateNpmRepoAction
             }
         }
 
-        $gate = self::runGate($repoPath, $branch, $npm, $useDdev, $crawlerCommandLine, $onProgress);
+        $gateNpm = self::gateNpm($repoPath, $useDdev, $npm, $onProgress);
+        if (is_string($gateNpm)) {
+            $stopDdev();
+
+            return RepoUpdateResult::failed($repoPath, $gateNpm, $branch);
+        }
+        $gate = self::runGate($repoPath, $branch, $gateNpm, $useDdev, $crawlerCommandLine, $onProgress);
         $stopDdev();
         if ($gate instanceof RepoUpdateResult) {
             return $gate;
@@ -319,19 +336,20 @@ final class UpdateNpmRepoAction
      * fails the repo. Test and crawler problems are reported and hold back
      * the push.
      *
-     * @param  list<string>  $npm
+     * @param  array{command: list<string>, label: string}  $gateNpm
      * @return RepoUpdateResult|array{testsRan: bool, testsFailed: int, testsBroken: bool, testsSummary: ?string, testsLogPath: ?string, crawlerRan: bool, crawlerFailed: bool, crawlerLogPath: ?string, crawlerServerErrorUrls: list<string>}
      */
-    private static function runGate(string $repoPath, string $branch, array $npm, bool $useDdev, ?string $crawlerCommandLine, ?callable $onProgress): RepoUpdateResult|array
+    private static function runGate(string $repoPath, string $branch, array $gateNpm, bool $useDdev, ?string $crawlerCommandLine, ?callable $onProgress): RepoUpdateResult|array
     {
-        $ci = UpdateRepoAction::run([...$npm, 'ci', '--ignore-scripts', '--no-audit', '--no-fund'], $repoPath, 1800, $onProgress, implode(' ', [...$npm, 'ci', '--ignore-scripts']));
+        ['command' => $npm, 'label' => $npmLabel] = $gateNpm;
+        $ci = UpdateRepoAction::run([...$npm, 'ci', '--ignore-scripts', '--no-audit', '--no-fund'], $repoPath, 1800, $onProgress, "{$npmLabel} ci --ignore-scripts");
         if (! $ci->isSuccessful()) {
             return UpdateRepoAction::fail($repoPath, $branch, 'npm ci', $ci);
         }
 
         $buildScript = self::buildScript((array) (json_decode((string) @file_get_contents($repoPath.'/package.json'), true)['scripts'] ?? []));
         if ($buildScript !== null) {
-            $build = UpdateRepoAction::run([...$npm, 'run', $buildScript], $repoPath, 1800, $onProgress, implode(' ', [...$npm, 'run', $buildScript]));
+            $build = UpdateRepoAction::run([...$npm, 'run', $buildScript], $repoPath, 1800, $onProgress, "{$npmLabel} run {$buildScript}");
             if (! $build->isSuccessful()) {
                 return UpdateRepoAction::fail($repoPath, $branch, "npm run {$buildScript} (with --ignore-scripts installs)", $build);
             }
@@ -419,6 +437,68 @@ final class UpdateNpmRepoAction
     }
 
     /**
+     * The npm that runs the gate (`npm ci` and the build): the Node from the
+     * project's `.nvmrc` with its own npm, so the gate installs and builds the
+     * way the server deploys. In ddev, `n` downloads the version into ddev's
+     * global cache. On the host, nvm provides it and installs a missing one.
+     * Without an `.nvmrc`, the gate uses the same npm as the update. Returns
+     * an error message when the version can't be provided.
+     *
+     * @param  list<string>  $npm
+     * @param  callable(string, ?string, ?string): void|null  $onProgress
+     * @return array{command: list<string>, label: string}|string
+     */
+    private static function gateNpm(string $repoPath, bool $useDdev, array $npm, ?callable $onProgress): array|string
+    {
+        $version = self::nvmrcVersion($repoPath);
+        if ($version === null) {
+            return ['command' => $npm, 'label' => implode(' ', $npm)];
+        }
+
+        if ($useDdev) {
+            return ['command' => ['ddev', 'exec', 'n', 'exec', '--download', $version, 'npm'], 'label' => "ddev npm (Node {$version} from .nvmrc)"];
+        }
+
+        $nvmDir = getenv('NVM_DIR') ?: rtrim((string) ($_SERVER['HOME'] ?? getenv('HOME')), '/').'/.nvm';
+        $nodeDir = self::installedNodeDir($nvmDir, $version);
+        if ($nodeDir === null && is_file($nvmDir.'/nvm.sh')) {
+            UpdateRepoAction::run(['bash', '-c', 'source "$1/nvm.sh" && nvm install "$2"', 'bash', $nvmDir, $version], $repoPath, 900, $onProgress, "nvm install {$version}");
+            $nodeDir = self::installedNodeDir($nvmDir, $version);
+        }
+        if ($nodeDir === null) {
+            return "Node {$version} from .nvmrc is not available: install nvm, or Node {$version} with nvm";
+        }
+
+        return ['command' => ['env', 'PATH='.$nodeDir.'/bin:'.getenv('PATH'), 'npm'], 'label' => 'npm (Node '.ltrim(basename($nodeDir), 'v').' from .nvmrc)'];
+    }
+
+    /**
+     * The Node version in the project's `.nvmrc`, without the leading `v`.
+     * Null without the file, or for an alias such as `lts/*`.
+     */
+    public static function nvmrcVersion(string $repoPath): ?string
+    {
+        $version = ltrim(trim((string) @file_get_contents($repoPath.'/.nvmrc')), 'vV');
+
+        return preg_match('/^\d+(\.\d+){0,2}$/', $version) === 1 ? $version : null;
+    }
+
+    /**
+     * The newest nvm-installed Node directory that matches a full or partial
+     * version (`10.22.0`, `22`), the way `nvm use` picks one.
+     */
+    public static function installedNodeDir(string $nvmDir, string $version): ?string
+    {
+        $matches = array_values(array_filter(
+            glob($nvmDir.'/versions/node/v*', GLOB_ONLYDIR) ?: [],
+            fn (string $dir) => str_starts_with(basename($dir).'.', 'v'.$version.'.'),
+        ));
+        usort($matches, fn (string $a, string $b) => version_compare(ltrim(basename($b), 'v'), ltrim(basename($a), 'v')));
+
+        return $matches[0] ?? null;
+    }
+
+    /**
      * The production build script: `build` (Vite), else `production` or `prod`
      * (Laravel Mix). Null when the project has none.
      *
@@ -433,6 +513,49 @@ final class UpdateNpmRepoAction
         }
 
         return null;
+    }
+
+    /**
+     * The packages whose installed versions differ between a lockfile v1 and
+     * its conversion. A git or file dependency is skipped, because the two
+     * formats record its version differently.
+     *
+     * @param  array<string, mixed>  $legacyLock
+     * @param  array<string, mixed>  $convertedLock
+     * @return list<string>
+     */
+    public static function conversionChanges(array $legacyLock, array $convertedLock): array
+    {
+        $legacy = [];
+        $walk = function (array $dependencies) use (&$walk, &$legacy): void {
+            foreach ($dependencies as $name => $entry) {
+                if (is_array($entry) && isset($entry['version'])) {
+                    $legacy[strtolower((string) $name)][] = (string) $entry['version'];
+                    $walk((array) ($entry['dependencies'] ?? []));
+                }
+            }
+        };
+        $walk((array) ($legacyLock['dependencies'] ?? []));
+
+        $isSemver = fn (string $version): bool => preg_match('/^\d+\.\d+\.\d+/', $version) === 1;
+        $converted = self::lockVersions($convertedLock);
+
+        $changed = [];
+        foreach (array_unique([...array_keys($legacy), ...array_keys($converted)]) as $name) {
+            $before = array_values(array_unique($legacy[$name] ?? []));
+            if (array_filter($before, fn (string $version) => ! $isSemver($version)) !== []) {
+                continue;
+            }
+            $after = $converted[$name] ?? [];
+            sort($before);
+            sort($after);
+            if ($before !== $after) {
+                $changed[] = $name;
+            }
+        }
+        sort($changed);
+
+        return $changed;
     }
 
     /**

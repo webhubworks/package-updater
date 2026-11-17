@@ -250,7 +250,13 @@ For each repo, the command does the following:
    production build (`npm run build`, else `production` or `prod` for
    Laravel Mix), `ddev browser-test` when
    `.ddev/commands/web/browser-test` exists, then the site-crawler.
-   `composer prep` doesn't run.
+   `composer prep` doesn't run. `npm ci` and the build use the Node
+   version in the project's `.nvmrc` with its own npm, so the gate installs
+   and builds like the server deploys. Inside ddev, `n` downloads that
+   version into ddev's global cache. On the host, nvm provides it and
+   installs a missing version. The update steps before the gate keep the
+   default npm, because npm 6 can't write lockfile v2 or apply overrides.
+   On Apple Silicon, Node versions before 16 need Rosetta.
 8. Commits only `package-lock.json`, plus `package.json` when an override
    was added, as `npm security updates`. The body lists each change with
    its relevance and advisories, the source files that import a changed

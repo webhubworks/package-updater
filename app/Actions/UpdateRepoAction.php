@@ -2460,6 +2460,8 @@ final class UpdateRepoAction
 
             'terminal prompts disabled' => 'git needs credentials it cannot get non-interactively — cache them (`git credential approve`) or switch the remote to SSH (`git remote set-url origin git@<host>:<path>.git`)',
 
+            'bad cpu type in executable' => 'this Mac cannot run an Intel build of Node: versions before Node 16 have no Apple Silicon build. Install Rosetta (`softwareupdate --install-rosetta`) or run the repo on Hulk',
+
             'cannot connect to the docker daemon' => 'Docker is not running — start Docker Desktop',
 
             'is the docker daemon running' => 'Docker is not running — start Docker Desktop',
