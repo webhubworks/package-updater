@@ -213,8 +213,9 @@ has it keeps skipping the repo until someone pulls it by hand.
 ### `update:npm`
 
 Applies the npm fixes that Panoptikum lists, and nothing else. Panoptikum
-decides what needs an update: open `immediate` or `monitor` npm threats on
-production cells, merged per repository. `pu update:npm` reads that list
+decides what needs an update: every open npm threat on production cells,
+whatever its relevance and including dev dependencies, merged per
+repository. Packages without an advisory are never touched. `pu update:npm` reads that list
 from Panoptikum's `GET /api/v1/npm-updates` and works through every local
 repo that appears in it. Configure the endpoint first, see
 [Panoptikum](#panoptikum-npm-updates).
