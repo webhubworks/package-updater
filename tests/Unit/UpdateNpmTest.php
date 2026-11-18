@@ -258,6 +258,15 @@ it('reads the Node version from .nvmrc and finds the matching nvm install', func
         ->and(UpdateNpmRepoAction::installedNodeDir($nvm, '12'))->toBeNull();
 });
 
+it('updates with the .nvmrc npm only from npm 8.3, which applies overrides', function () {
+    expect(UpdateNpmRepoAction::supportsOverrides("11.6.2\n"))->toBeTrue()
+        ->and(UpdateNpmRepoAction::supportsOverrides('8.3.0'))->toBeTrue()
+        ->and(UpdateNpmRepoAction::supportsOverrides("  installing : node-v24.22.2\n10.9.4\n"))->toBeTrue()
+        ->and(UpdateNpmRepoAction::supportsOverrides('8.1.2'))->toBeFalse()
+        ->and(UpdateNpmRepoAction::supportsOverrides("6.14.8\n"))->toBeFalse()
+        ->and(UpdateNpmRepoAction::supportsOverrides(''))->toBeFalse();
+});
+
 it('names which copy of a package a note is about', function () {
     $lock = ['lockfileVersion' => 2, 'packages' => [
         '' => ['dependencies' => ['axios' => '^1.7.8'], 'devDependencies' => ['browser-sync' => '^2.0.0']],

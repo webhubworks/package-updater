@@ -265,8 +265,10 @@ For each repo, the command does the following:
    version in the project's `.nvmrc` with its own npm, so the gate installs
    and builds like the server deploys. Inside ddev, `n` downloads that
    version into ddev's global cache. On the host, nvm provides it and
-   installs a missing version. The update steps before the gate keep the
-   default npm, because npm 6 can't write lockfile v2 or apply overrides.
+   installs a missing version. The update steps before the gate use the
+   same npm when it's 8.3 or later, so the lockfile is the one the
+   server's npm writes. An older pin keeps the default npm for the update,
+   because npm before 8.3 ignores overrides.
    On Apple Silicon, Node versions before 16 need Rosetta.
 8. Commits only `package-lock.json`, plus `package.json` when an override
    was added, as `npm security updates`. The body lists each change with

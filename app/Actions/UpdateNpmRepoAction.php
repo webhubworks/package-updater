@@ -95,6 +95,8 @@ final class UpdateNpmRepoAction
 
         $useDdev = is_file($repoPath.'/.ddev/config.yaml');
         $npm = $useDdev ? ['ddev', 'npm'] : ['npm'];
+        $npmLabel = implode(' ', $npm);
+        $gateNpm = null;
         $npmFlags = ['--ignore-scripts', '--before='.date('Y-m-d', strtotime('-'.self::MinReleaseAgeDays.' days')), '--no-audit', '--no-fund'];
 
         // ddev only starts once npm has to run, so a repo with nothing to do stays down.
@@ -116,6 +118,33 @@ final class UpdateNpmRepoAction
                 UpdateRepoAction::run(['ddev', 'stop'], $repoPath, 300, $onProgress, 'ddev stop');
             }
         };
+        // The update runs on the `.nvmrc` Node as well, so the lockfile is the
+        // one the server's npm writes. npm before 8.3 ignores `overrides`, so
+        // an older pin keeps the PATH npm for the update, and only the gate
+        // runs on it.
+        $prepareNpm = function () use ($ensureDdev, $stopDdev, $repoPath, $branch, $useDdev, $onProgress, &$npm, &$npmLabel, &$gateNpm): ?RepoUpdateResult {
+            if ($gateNpm !== null) {
+                return null;
+            }
+            $failure = $ensureDdev();
+            if ($failure !== null) {
+                return $failure;
+            }
+            $gateNpm = self::gateNpm($repoPath, $useDdev, $npm, $onProgress);
+            if (is_string($gateNpm)) {
+                $stopDdev();
+
+                return RepoUpdateResult::failed($repoPath, $gateNpm, $branch);
+            }
+            if ($gateNpm['command'] !== $npm) {
+                $version = UpdateRepoAction::run([...$gateNpm['command'], '--version'], $repoPath, 900, $onProgress, "{$gateNpm['label']} --version", stream: false);
+                if ($version->isSuccessful() && self::supportsOverrides($version->getOutput())) {
+                    ['command' => $npm, 'label' => $npmLabel] = $gateNpm;
+                }
+            }
+
+            return null;
+        };
 
         // A lockfile v1 has no "packages" map. Convert it first; the conversion
         // keeps the installed versions and gets its own commit, checked by the
@@ -124,12 +153,12 @@ final class UpdateNpmRepoAction
         // npm 7 and later keep a v2 lockfile at v2.
         $legacyLock = null;
         if (self::needsLockConversion($lockBefore)) {
-            $failure = $ensureDdev();
+            $failure = $prepareNpm();
             if ($failure !== null) {
                 return $failure;
             }
 
-            $convert = UpdateRepoAction::run([...$npm, 'install', '--package-lock-only', '--lockfile-version=2', '--ignore-scripts', '--no-audit', '--no-fund'], $repoPath, 1800, $onProgress, implode(' ', [...$npm, 'install', '--package-lock-only']).' (convert lockfile v1)');
+            $convert = UpdateRepoAction::run([...$npm, 'install', '--package-lock-only', '--lockfile-version=2', '--ignore-scripts', '--no-audit', '--no-fund'], $repoPath, 1800, $onProgress, "{$npmLabel} install --package-lock-only (convert lockfile v1)");
             $converted = (string) @file_get_contents($lockPath);
             $convertedData = json_decode($converted, true);
             if (! $convert->isSuccessful() || ! is_array($convertedData) || self::needsLockConversion($convertedData)) {
@@ -172,7 +201,7 @@ final class UpdateNpmRepoAction
             return RepoUpdateResult::success($repoPath, $branch, false, divergedReset: $divergedReset, notes: $notes);
         }
 
-        $failure = $ensureDdev();
+        $failure = $prepareNpm();
         if ($failure !== null) {
             return $failure;
         }
@@ -193,7 +222,7 @@ final class UpdateNpmRepoAction
             $restore();
             $overrides = [];
 
-            $update = UpdateRepoAction::run([...$npm, 'update', ...array_keys($toUpdate), ...$npmFlags], $repoPath, 1800, $onProgress, implode(' ', [...$npm, 'update', ...array_keys($toUpdate)]));
+            $update = UpdateRepoAction::run([...$npm, 'update', ...array_keys($toUpdate), ...$npmFlags], $repoPath, 1800, $onProgress, $npmLabel.' update '.implode(' ', array_keys($toUpdate)));
             if (! $update->isSuccessful()) {
                 $stopDdev();
 
@@ -208,7 +237,7 @@ final class UpdateNpmRepoAction
             // an override on top of the exact pin leaves a lock `npm ci` rejects.
             $parents = self::heldBackParents($toUpdate, $versionsAfter, $direct, $lockAfterUpdate);
             if ($parents !== []) {
-                $parentUpdate = UpdateRepoAction::run([...$npm, 'update', ...$parents, ...$npmFlags], $repoPath, 1800, $onProgress, implode(' ', [...$npm, 'update', ...$parents]).' (parents)');
+                $parentUpdate = UpdateRepoAction::run([...$npm, 'update', ...$parents, ...$npmFlags], $repoPath, 1800, $onProgress, $npmLabel.' update '.implode(' ', $parents).' (parents)');
                 if (! $parentUpdate->isSuccessful()) {
                     $stopDdev();
 
@@ -227,7 +256,7 @@ final class UpdateNpmRepoAction
                 $updatedLock = (string) file_get_contents($lockPath);
                 $updatedPackageJson = (string) file_get_contents($packageJsonPath);
                 file_put_contents($packageJsonPath, self::withOverrides($updatedPackageJson, $overrides));
-                $install = UpdateRepoAction::run([...$npm, 'install', ...$npmFlags], $repoPath, 1800, $onProgress, implode(' ', [...$npm, 'install']).' (apply overrides)');
+                $install = UpdateRepoAction::run([...$npm, 'install', ...$npmFlags], $repoPath, 1800, $onProgress, "{$npmLabel} install (apply overrides)");
                 if ($install->isSuccessful()) {
                     $versionsAfter = self::lockVersions((array) json_decode((string) file_get_contents($lockPath), true));
                 } else {
@@ -280,12 +309,6 @@ final class UpdateNpmRepoAction
             }
         }
 
-        $gateNpm = self::gateNpm($repoPath, $useDdev, $npm, $onProgress);
-        if (is_string($gateNpm)) {
-            $stopDdev();
-
-            return RepoUpdateResult::failed($repoPath, $gateNpm, $branch);
-        }
         $gate = self::runGate($repoPath, $branch, $gateNpm, $useDdev, $crawlerCommandLine, $onProgress);
         $stopDdev();
         if ($gate instanceof RepoUpdateResult) {
@@ -536,6 +559,17 @@ final class UpdateNpmRepoAction
         }
 
         return ['command' => ['env', 'PATH='.$nodeDir.'/bin:'.getenv('PATH'), 'npm'], 'label' => 'npm (Node '.ltrim(basename($nodeDir), 'v').' from .nvmrc)'];
+    }
+
+    /**
+     * Whether the output of `npm --version` names npm 8.3 or later, the first
+     * npm that applies `overrides`. Download progress before the version, as
+     * `n exec --download` prints it, is ignored.
+     */
+    public static function supportsOverrides(string $versionOutput): bool
+    {
+        return preg_match('/(\d+\.\d+\.\d+)\s*$/', $versionOutput, $match) === 1
+            && version_compare($match[1], '8.3.0', '>=');
     }
 
     /**
