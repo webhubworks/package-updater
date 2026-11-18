@@ -63,6 +63,12 @@ arguments (`pu update vendor/foo vendor/bar`) restrict the update to
 those packages. Use `--no-ddev` to force host composer, `--commit` /
 `--no-commit` to skip the commit prompt.
 
+`--key=<panoptikum key>` runs the update in the repo under the repos
+directory whose Panoptikum key (composer name, else origin owner/repo)
+matches, so it works from any directory. Panoptikum's cell page shows
+copyable commands such as `pu update --key=acme/shop guzzlehttp/guzzle`.
+The update runs on the branch the repo has checked out.
+
 ### `update:all`
 
 Universal bulk update — one composer package across every local repo
@@ -275,6 +281,7 @@ Node apps, run the host's `npm` and get no crawl.
 ```bash
 pu update:npm --dry-run                  # list repos and the packages Panoptikum wants updated
 pu update:npm --repo=$HOME/reps/mesh     # one repo, interactive
+pu update:npm --key=acme/shop            # one repo by its Panoptikum key, from any directory
 pu update:npm --maintenance              # dedicated server: commit, push, Slack summary
 ```
 

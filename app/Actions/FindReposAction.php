@@ -2,6 +2,8 @@
 
 namespace PackageUpdater\Actions;
 
+use PackageUpdater\Support\RepoName;
+
 final class FindReposAction
 {
     public static function isPattern(string $package): bool
@@ -149,6 +151,23 @@ final class FindReposAction
         }
 
         return false;
+    }
+
+    /**
+     * The local repos whose Panoptikum key (composer name, else origin
+     * owner/repo) equals $key, so a command copied from Panoptikum finds its
+     * repo from any directory.
+     *
+     * @return list<string>
+     */
+    public static function findByPanoptikumKey(string $reposDir, string $key): array
+    {
+        $key = strtolower(trim($key));
+
+        return array_values(array_filter(
+            self::collectRepoDirs($reposDir, markerFiles: ['composer.lock', 'package-lock.json']),
+            fn (string $dir) => RepoName::panoptikumKey($dir) === $key,
+        ));
     }
 
     /**

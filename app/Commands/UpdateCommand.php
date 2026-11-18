@@ -4,20 +4,27 @@ namespace PackageUpdater\Commands;
 
 use LaravelZero\Framework\Commands\Command;
 use PackageUpdater\Actions\FindCraftReposAction;
+use PackageUpdater\Actions\FindReposAction;
 use PackageUpdater\Actions\UpdateRepoAction;
+use PackageUpdater\Concerns\ResolvesReposDir;
 use Symfony\Component\Console\Formatter\OutputFormatter;
 use Symfony\Component\Console\Terminal;
 use Symfony\Component\Process\Process;
 
 use function Laravel\Prompts\confirm;
 use function Laravel\Prompts\info;
+use function Laravel\Prompts\select;
 use function Laravel\Prompts\text;
 use function Laravel\Prompts\warning;
 
 class UpdateCommand extends Command
 {
+    use ResolvesReposDir;
+
     protected $signature = 'update
         {package?* : Composer package name(s) to update; blank = full update}
+        {--key= : Run in the repo under the repos directory whose Panoptikum key (composer name or origin owner/repo) is this, instead of the current directory}
+        {--reps-dir= : Directory containing repos, for --key (default: ~/reps)}
         {--no-ddev : Skip ddev detection and run composer on the host}
         {--no-craft : Force composer update even if this repo is a Craft CMS repo}
         {--commit : Always commit the resulting changes (skip prompt)}
@@ -29,7 +36,10 @@ class UpdateCommand extends Command
 
     public function handle(): int
     {
-        $cwd = getcwd() ?: '.';
+        $cwd = $this->resolveWorkingDirectory();
+        if ($cwd === null) {
+            return self::FAILURE;
+        }
 
         if (! is_file($cwd.'/composer.json')) {
             $this->error("No composer.json found in {$cwd}");
@@ -147,6 +157,39 @@ class UpdateCommand extends Command
         }
 
         return $exitCode;
+    }
+
+    /**
+     * The current directory, or with --key the local repo Panoptikum knows
+     * under that key. Prints which repo and branch the update runs on.
+     */
+    private function resolveWorkingDirectory(): ?string
+    {
+        $key = $this->option('key');
+        if (! is_string($key) || $key === '') {
+            return getcwd() ?: '.';
+        }
+
+        $reposDir = $this->resolveReposDir();
+        if ($reposDir === null) {
+            return null;
+        }
+
+        $matches = FindReposAction::findByPanoptikumKey($reposDir, $key);
+        if ($matches === []) {
+            $this->error("No repo under {$reposDir} has the Panoptikum key {$key}. Clone it first.");
+
+            return null;
+        }
+
+        $repo = count($matches) === 1
+            ? $matches[0]
+            : (string) select(label: "Several repos have the key {$key}. Which one?", options: array_combine($matches, $matches));
+
+        $branch = trim($this->exec(['git', 'branch', '--show-current'], $repo, stream: false)->getOutput());
+        info("Updating {$repo} on branch {$branch}.");
+
+        return $repo;
     }
 
     private static function isCraftRepo(string $cwd): bool

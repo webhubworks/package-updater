@@ -29,6 +29,7 @@ class UpdateNpmCommand extends UpdateCraftCommand
         {--dry-run : List the matching repos with the packages Panoptikum wants updated and exit}
         {--repo=* : Process only the specified repo path(s); can be passed multiple times. Skips the interactive repo selection.}
         {--filter-name= : Keep only repos whose Panoptikum key (composer name or origin owner/repo) contains this substring}
+        {--key= : Keep only the repo whose Panoptikum key (composer name or origin owner/repo) is exactly this}
         {--no-ssh-auth : Skip the initial `ddev auth ssh` step}
         {--stop-ddev : Stop the ddev project in each repo after a successful update (default: keep running)}
         {--commit : Commit the lockfile as "npm security updates" (skips the prompt)}
@@ -92,6 +93,11 @@ class UpdateNpmCommand extends UpdateCraftCommand
         $filter = $this->option('filter-name');
         if (is_string($filter) && $filter !== '') {
             $matches = array_values(array_filter($matches, fn (array $m) => str_contains($m['key'], strtolower($filter))));
+        }
+
+        $key = $this->option('key');
+        if (is_string($key) && $key !== '') {
+            $matches = array_values(array_filter($matches, fn (array $m) => $m['key'] === strtolower(trim($key))));
         }
 
         if ($matches === []) {
