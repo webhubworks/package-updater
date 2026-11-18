@@ -151,6 +151,19 @@ it('lists the files that import a changed package or its direct parent', functio
         ]);
 });
 
+it('names the direct parents of transitive packages still below their fix', function () {
+    $lock = ['packages' => [
+        'node_modules/vue' => ['version' => '3.5.32', 'dependencies' => ['@vue/server-renderer' => '3.5.32']],
+        'node_modules/@vue/server-renderer' => ['version' => '3.5.32'],
+        'node_modules/axios' => ['version' => '1.15.2', 'dependencies' => ['form-data' => '^4.0.0']],
+        'node_modules/form-data' => ['version' => '4.0.5'],
+    ]];
+    $direct = ['vue' => true, 'axios' => true];
+    $toUpdate = ['@vue/server-renderer' => '3.5.42', 'form-data' => '4.0.4', 'axios' => '1.15.1'];
+
+    expect(UpdateNpmRepoAction::heldBackParents($toUpdate, UpdateNpmRepoAction::lockVersions($lock), $direct, $lock))->toBe(['vue']);
+});
+
 it('links GitHub compare views, else the npm versions page', function () {
     expect(UpdateNpmRepoAction::compareLink('git+https://github.com/js-cookie/js-cookie.git', 'js-cookie', '3.0.1', '3.0.5'))
         ->toBe('https://github.com/js-cookie/js-cookie/compare/v3.0.1...v3.0.5')

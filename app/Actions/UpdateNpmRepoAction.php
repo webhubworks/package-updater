@@ -200,7 +200,23 @@ final class UpdateNpmRepoAction
                 return UpdateRepoAction::fail($repoPath, $branch, 'npm update', $update);
             }
 
-            $versionsAfter = self::lockVersions((array) json_decode((string) file_get_contents($lockPath), true));
+            $lockAfterUpdate = (array) json_decode((string) file_get_contents($lockPath), true);
+            $versionsAfter = self::lockVersions($lockAfterUpdate);
+
+            // A parent that pins the package exactly (vue pins @vue/server-renderer)
+            // holds it back. Updating that parent within its range moves both, and
+            // an override on top of the exact pin leaves a lock `npm ci` rejects.
+            $parents = self::heldBackParents($toUpdate, $versionsAfter, $direct, $lockAfterUpdate);
+            if ($parents !== []) {
+                $parentUpdate = UpdateRepoAction::run([...$npm, 'update', ...$parents, ...$npmFlags], $repoPath, 1800, $onProgress, implode(' ', [...$npm, 'update', ...$parents]).' (parents)');
+                if (! $parentUpdate->isSuccessful()) {
+                    $stopDdev();
+
+                    return UpdateRepoAction::fail($repoPath, $branch, 'npm update', $parentUpdate);
+                }
+                $versionsAfter = self::lockVersions((array) json_decode((string) file_get_contents($lockPath), true));
+            }
+
             foreach ($toUpdate as $name => $fixed) {
                 if (! isset($direct[$name]) && self::belowFixOnSameLine($versionsAfter[$name] ?? [], $fixed) !== []) {
                     $overrides[$name] = '^'.$fixed;
@@ -774,6 +790,31 @@ final class UpdateNpmRepoAction
         }
 
         return $names;
+    }
+
+    /**
+     * The direct dependencies above the targeted transitive packages that are
+     * still below their fix after `npm update`, minus packages already targeted.
+     *
+     * @param  array<string, string>  $toUpdate  package => first fixed version
+     * @param  array<string, list<string>>  $versionsAfter
+     * @param  array<string, true>  $direct
+     * @param  array<string, mixed>  $lock
+     * @return list<string>
+     */
+    public static function heldBackParents(array $toUpdate, array $versionsAfter, array $direct, array $lock): array
+    {
+        $heldBack = array_keys(array_filter(
+            $toUpdate,
+            fn (string $fixed, string $name) => ! isset($direct[$name]) && self::belowFixOnSameLine($versionsAfter[$name] ?? [], $fixed) !== [],
+            ARRAY_FILTER_USE_BOTH,
+        ));
+
+        if ($heldBack === []) {
+            return [];
+        }
+
+        return array_values(array_diff(array_keys(self::directParentsOf($heldBack, $lock, $direct)), array_keys($toUpdate)));
     }
 
     /**
