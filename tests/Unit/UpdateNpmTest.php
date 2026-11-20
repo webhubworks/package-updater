@@ -216,6 +216,13 @@ it('picks the production build script of Vite and Laravel Mix projects', functio
         ->and(UpdateNpmRepoAction::buildScript(['dev' => 'mix']))->toBeNull();
 });
 
+it('fails a build that printed a webpack module error despite exit code 0', function () {
+    expect(UpdateNpmRepoAction::buildReportedErrors("Hash: 648a\n\e[1m\e[31mERROR in ENOENT: no such file\e[39m\e[22m\n"))->toBeTrue()
+        ->and(UpdateNpmRepoAction::buildReportedErrors("ERROR in ./src/a.scss\nModule build failed"))->toBeTrue()
+        ->and(UpdateNpmRepoAction::buildReportedErrors("WARNING in API_URL environment variable is undefined.\nclient.js  671 kB"))->toBeFalse()
+        ->and(UpdateNpmRepoAction::buildReportedErrors("vite v5.4.0 building for production...\n✓ built in 2.1s"))->toBeFalse();
+});
+
 it('accepts a lockfile conversion only when no installed version changes', function () {
     $legacy = ['lockfileVersion' => 1, 'dependencies' => [
         'axios' => ['version' => '1.7.9', 'dependencies' => ['follow-redirects' => ['version' => '1.15.9']]],

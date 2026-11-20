@@ -388,10 +388,16 @@ final class UpdateNpmRepoAction
             return UpdateRepoAction::fail($repoPath, $branch, 'npm ci', $ci);
         }
 
+        // node-sass downloads its binding in an install script, which --ignore-scripts skipped.
+        // The exit code is ignored: old nested copies fail to rebuild, and a broken top-level copy fails the build.
+        if (is_dir($repoPath.'/node_modules/node-sass')) {
+            UpdateRepoAction::run([...$npm, 'rebuild', 'node-sass'], $repoPath, 600, $onProgress, "{$npmLabel} rebuild node-sass");
+        }
+
         $buildScript = self::buildScript((array) (json_decode((string) @file_get_contents($repoPath.'/package.json'), true)['scripts'] ?? []));
         if ($buildScript !== null) {
             $build = UpdateRepoAction::run([...$npm, 'run', $buildScript], $repoPath, 1800, $onProgress, "{$npmLabel} run {$buildScript}");
-            if (! $build->isSuccessful()) {
+            if (! $build->isSuccessful() || self::buildReportedErrors($build->getOutput()."\n".$build->getErrorOutput())) {
                 return UpdateRepoAction::fail($repoPath, $branch, "npm run {$buildScript} (with --ignore-scripts installs)", $build);
             }
         }
@@ -613,6 +619,17 @@ final class UpdateNpmRepoAction
         }
 
         return null;
+    }
+
+    /**
+     * Whether a build printed a webpack module error. webpack 1 to 4 exit 0
+     * on module errors unless `bail` is set.
+     */
+    public static function buildReportedErrors(string $output): bool
+    {
+        $stripped = preg_replace('/\x1b\[[0-9;]*[A-Za-z]/', '', $output) ?? $output;
+
+        return preg_match('/^ERROR in /m', $stripped) === 1;
     }
 
     /**

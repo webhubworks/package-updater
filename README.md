@@ -270,6 +270,10 @@ For each repo, the command does the following:
    server's npm writes. An older pin keeps the default npm for the update,
    because npm before 8.3 ignores overrides.
    On Apple Silicon, Node versions before 16 need Rosetta.
+   When the project has `node-sass`, the gate runs `npm rebuild node-sass`
+   before the build, because its binding comes from an install script.
+   A build that prints `ERROR in` fails the gate even when it exits 0,
+   because webpack 1 to 4 do that on module errors.
 8. Commits only `package-lock.json`, plus `package.json` when an override
    was added, as `npm security updates`. The body lists each change with
    its relevance and advisories, the source files that import a changed
