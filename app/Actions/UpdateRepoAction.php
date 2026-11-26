@@ -723,7 +723,7 @@ final class UpdateRepoAction
         bool $allowTransientRetry = false,
     ): array|RepoUpdateResult {
         if ($craftCommandLine !== null) {
-            $updateCommand = $craftCommandLine;
+            $updateCommand = self::withContainerComposerAuth($craftCommandLine);
             $updateLabel = $craftCommandLine;
             $failStep = 'ddev craft update';
         } else {
@@ -770,6 +770,27 @@ final class UpdateRepoAction
         // Unreachable: the loop either returns a result or fails on the last
         // attempt, but keep the analyzer happy.
         return self::fail($repoPath, $branch, $failStep, $update);
+    }
+
+    /**
+     * Craft's updater runs Composer with its own COMPOSER_HOME in
+     * storage/runtime/composer, so it never reads the global auth.json that ddev
+     * copies into the web container, and private registries answer 401. It does
+     * inherit COMPOSER_AUTH, so a `ddev php craft ...` line runs through
+     * `ddev exec` with that file's contents in COMPOSER_AUTH. The token never
+     * leaves the container. Any other command line is returned unchanged.
+     */
+    public static function withContainerComposerAuth(string $commandLine): string
+    {
+        $prefix = 'ddev php craft ';
+
+        if (! str_starts_with($commandLine, $prefix)) {
+            return $commandLine;
+        }
+
+        $inner = 'COMPOSER_AUTH="$(cat ~/.composer/auth.json 2>/dev/null)" php craft '.substr($commandLine, strlen($prefix));
+
+        return 'ddev exec '.escapeshellarg($inner);
     }
 
     /**

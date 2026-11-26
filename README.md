@@ -130,7 +130,11 @@ Craft-aware variant. Same flow, but:
   `ddev composer install` → `ddev php craft migrate/all` →
   `ddev php craft project-config/apply`.
 - Runs `ddev php craft update <handle>` (with sensible defaults you can
-  edit at the prompt) instead of `composer update`.
+  edit at the prompt) instead of `composer update`. A `ddev php craft ...`
+  line runs through `ddev exec` with the container's `~/.composer/auth.json`
+  in `COMPOSER_AUTH`: Craft's updater sets its own `COMPOSER_HOME` and
+  would otherwise get 401 from private registries such as
+  `packages.webhub.de`.
 - After `composer prep`, optionally runs `site-crawler crawl:ddev` in a
   second multiselect-chosen subset of repos. Parses the crawler's
   "Failed requests" table and warns on any 5xx URLs even if the crawler
