@@ -7,6 +7,9 @@ use PackageUpdater\Actions\FindCraftReposAction;
 use PackageUpdater\Actions\FindReposAction;
 use PackageUpdater\Actions\UpdateRepoAction;
 use PackageUpdater\Concerns\ResolvesReposDir;
+use PackageUpdater\Support\PanoptikumClient;
+use PackageUpdater\Support\RepoName;
+use PackageUpdater\Support\UserConfig;
 use Symfony\Component\Console\Formatter\OutputFormatter;
 use Symfony\Component\Console\Terminal;
 use Symfony\Component\Process\Process;
@@ -32,7 +35,10 @@ class UpdateCommand extends Command
         {--show-output : Stream composer output live instead of running it under a spinner}
         {--yes : Skip the run confirmation (defaults to committing if neither --commit nor --no-commit is set)}';
 
-    protected $description = 'Update the current repo (Craft repos: `ddev php craft update all`; otherwise: `composer update`), parse the package changes, and commit them';
+    protected $description = 'Update the current repo (Craft repos: `ddev php craft update all`, then the composer packages Panoptikum lists as vulnerable; otherwise: `composer update`), parse the package changes, and commit them';
+
+    /** One commit answer for the whole run, so the security step can't commit changes the user chose to keep. */
+    private ?bool $commitDecision = null;
 
     public function handle(): int
     {
@@ -147,6 +153,10 @@ class UpdateCommand extends Command
                 ? 'No working-tree changes after craft update — nothing to commit.'
                 : 'No working-tree changes after composer update — nothing to commit.');
         } elseif ($this->shouldCommit() && ! $this->commit($cwd, $updates, $isCraft)) {
+            $exitCode = self::FAILURE;
+        }
+
+        if ($isCraft && $exitCode === self::SUCCESS && ! $this->runPanoptikumComposerUpdates($cwd)) {
             $exitCode = self::FAILURE;
         }
 
@@ -510,7 +520,7 @@ class UpdateCommand extends Command
         $this->line('  <fg=gray>Run `composer audit` for details.</>');
     }
 
-    private function shouldCommit(): bool
+    private function shouldCommit(string $title = 'Package updates'): bool
     {
         if ($this->option('no-commit')) {
             return false;
@@ -519,14 +529,106 @@ class UpdateCommand extends Command
             return true;
         }
 
-        return confirm(
-            label: 'Commit the changes? (title: "Package updates", body: parsed update list)',
+        return $this->commitDecision ??= confirm(
+            label: "Commit the changes? (title: \"{$title}\", body: parsed update list)",
             default: true,
         );
     }
 
+    /**
+     * `craft update` leaves vulnerable libraries such as symfony/* alone, so
+     * this runs `composer update` for the packages Panoptikum lists for the
+     * repo and commits them on their own. Optional: skipped when Panoptikum
+     * isn't set up or doesn't answer. Returns false when a step failed.
+     */
+    private function runPanoptikumComposerUpdates(string $cwd): bool
+    {
+        $url = UserConfig::getPanoptikumUrl();
+        $token = UserConfig::getPanoptikumToken();
+        if ($url === null || $token === null) {
+            return true;
+        }
+
+        try {
+            $repositories = PanoptikumClient::composerUpdates($url, $token);
+        } catch (\Throwable $e) {
+            warning('Skipping the Panoptikum security updates: '.$e->getMessage());
+
+            return true;
+        }
+
+        $packages = self::panoptikumPackagesFor(RepoName::panoptikumKey($cwd), $repositories);
+        if ($packages === []) {
+            return true;
+        }
+
+        $cmd = ['ddev', 'composer', 'update', ...$packages];
+        $label = implode(' ', $cmd);
+        $this->newLine();
+        if (! $this->option('yes') && ! confirm("Panoptikum lists vulnerable packages that craft update leaves alone. Run `{$label}`?", default: true)) {
+            return true;
+        }
+
+        $update = $this->runComposer($cmd, $cwd, $label);
+        $logPath = $this->writeLog($cwd, $cmd, $update, 'pu-security');
+        if (! $update->isSuccessful()) {
+            $this->error("composer update failed (exit {$update->getExitCode()}):");
+            $this->dumpOutput($update);
+            $this->printLogPath($logPath);
+
+            return false;
+        }
+
+        $updates = self::parseComposerUpdates($update->getOutput()."\n".$update->getErrorOutput());
+        if ($updates === []) {
+            info('The packages Panoptikum lists are already up to date here.');
+
+            return true;
+        }
+
+        info(sprintf('%d security update(s):', count($updates)));
+        foreach ($updates as $u) {
+            $this->line('  '.self::formatUpdateLine($u));
+        }
+
+        // Same follow-up as the update:craft composer sweep: craftcms/cms or a plugin may have moved.
+        foreach ([['ddev', 'php', 'craft', 'migrate/all'], ['ddev', 'php', 'craft', 'project-config/apply']] as $step) {
+            $process = $this->runComposer($step, $cwd, implode(' ', $step));
+            if (! $process->isSuccessful()) {
+                $this->error(implode(' ', $step)." failed (exit {$process->getExitCode()}):");
+                $this->dumpOutput($process);
+
+                return false;
+            }
+        }
+
+        return ! $this->shouldCommit('Security updates') || $this->commit($cwd, $updates, title: 'Security updates');
+    }
+
+    /**
+     * The composer packages Panoptikum lists for the repo with this key.
+     * Names reach composer as arguments, so the pattern keeps option-like
+     * values such as `--working-dir=...` out.
+     *
+     * @param  list<array<string, mixed>>  $repositories
+     * @return list<string>
+     */
+    public static function panoptikumPackagesFor(string $key, array $repositories): array
+    {
+        foreach ($repositories as $repository) {
+            if (strtolower((string) ($repository['repository'] ?? '')) === $key) {
+                return array_values(array_filter(
+                    (array) ($repository['packages'] ?? []),
+                    fn ($package) => is_string($package) && preg_match('#^[a-z0-9][a-z0-9_.-]*/[a-z0-9][a-z0-9_.-]*$#', $package) === 1,
+                ));
+            }
+        }
+
+        return [];
+    }
+
     /** @param  list<array<string, mixed>>  $updates */
-    private function commit(string $cwd, array $updates, bool $isCraft = false): bool
+    private function commit(string $cwd, array $updates, bool $isCraft = false, string $title = 'Package updates'): bool
     {
         $add = $this->exec(['git', 'add', '-A'], $cwd, stream: false);
         if (! $add->isSuccessful()) {
@@ -545,7 +647,7 @@ class UpdateCommand extends Command
         }
 
         $commit = $this->exec(
-            ['git', 'commit', '-m', 'Package updates', '-m', $body],
+            ['git', 'commit', '-m', $title, '-m', $body],
             $cwd,
             stream: false,
         );

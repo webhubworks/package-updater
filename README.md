@@ -63,6 +63,16 @@ arguments (`pu update vendor/foo vendor/bar`) restrict the update to
 those packages. Use `--no-ddev` to force host composer, `--commit` /
 `--no-commit` to skip the commit prompt.
 
+In a Craft repo without package arguments, `pu update` runs
+`craft update all` instead. Craft's updater leaves vulnerable libraries
+such as `symfony/*` alone, so when [Panoptikum](#panoptikum-npm-updates)
+is set up, `pu update` then asks Panoptikum's `GET
+/api/v1/composer-updates` for the composer packages it lists for this
+repo, runs `ddev composer update <packages>`, `migrate/all`, and
+`project-config/apply`, and commits the result separately as
+`Security updates`. Without Panoptikum, or when it doesn't answer, the
+step is skipped. `update:craft` and maintenance runs don't do this step.
+
 `--key=<panoptikum key>` runs the update in the repo under the repos
 directory whose Panoptikum key (composer name, else origin owner/repo)
 matches, so it works from any directory. Panoptikum's cell page shows
