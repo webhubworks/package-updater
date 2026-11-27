@@ -1234,7 +1234,8 @@ final class UpdateRepoAction
                 continue;
             }
 
-            if (preg_match('/^-\s+(\S+)\s+(\S+)\s+=>\s+(\S+)\s*$/', $trimmed, $m)) {
+            // Craft can append a status such as "(CRITICAL)" or "(EXPIRED)".
+            if (preg_match('/^-\s+(\S+)\s+(\S+)\s+=>\s+(\S+)(?:\s+\([^)]*\))*\s*$/', $trimmed, $m)) {
                 $updates[] = ['name' => $m[1], 'from' => $m[2], 'to' => $m[3]];
 
                 continue;

@@ -74,3 +74,21 @@ TXT;
         ['name' => 'craft', 'from' => '5.9.22', 'to' => '5.10.1'],
     ]);
 });
+
+test('reads lines that carry a status such as (CRITICAL) or (EXPIRED)', function () {
+    $output = <<<'TXT'
+Performing 3 updates:
+
+    - craft 5.7.6 => 5.12.4 (CRITICAL)
+    - blitz 5.10.5 => 5.15.0 (EXPIRED)
+    - contact-form 3.1.0 => 3.2.0
+
+Skipping database backup.
+TXT;
+
+    expect(UpdateRepoAction::parseCraftUpdates($output))->toBe([
+        ['name' => 'craft', 'from' => '5.7.6', 'to' => '5.12.4'],
+        ['name' => 'blitz', 'from' => '5.10.5', 'to' => '5.15.0'],
+        ['name' => 'contact-form', 'from' => '3.1.0', 'to' => '3.2.0'],
+    ]);
+});
