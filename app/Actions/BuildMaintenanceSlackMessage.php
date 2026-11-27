@@ -42,9 +42,10 @@ final class BuildMaintenanceSlackMessage
 
     /**
      * @param  list<RepoUpdateResult>  $results
+     * @param  string|null  $warning  A run-wide problem that didn't fail any repo, such as Panoptikum being unreachable.
      * @return array<string, mixed>
      */
-    public static function build(array $results, string $handle, ?string $reposDir, string $timestamp): array
+    public static function build(array $results, string $handle, ?string $reposDir, string $timestamp, ?string $warning = null): array
     {
         /** @var list<string> $pushed */
         $pushed = [];
@@ -160,8 +161,11 @@ final class BuildMaintenanceSlackMessage
                 'type' => 'section',
                 'text' => ['type' => 'mrkdwn', 'text' => $countsLine],
             ],
-            ['type' => 'divider'],
         ];
+        if ($warning !== null) {
+            $blocks[] = ['type' => 'section', 'text' => ['type' => 'mrkdwn', 'text' => '⚠️ '.$warning]];
+        }
+        $blocks[] = ['type' => 'divider'];
 
         array_push($blocks, ...self::sectionBlocks(sprintf('✅ *Updated, committed & pushed* (%d)', count($pushed)), $pushed));
         array_push($blocks, ...self::sectionBlocks(sprintf('⚠️ *Updated but not pushed* (%d)', count($needsReview)), $needsReview));

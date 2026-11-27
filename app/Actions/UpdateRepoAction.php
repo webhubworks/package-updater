@@ -3,6 +3,7 @@
 namespace PackageUpdater\Actions;
 
 use PackageUpdater\DataTransferObjects\RepoUpdateResult;
+use Symfony\Component\Process\Exception\ProcessTimedOutException;
 use Symfony\Component\Process\Process;
 
 final class UpdateRepoAction
@@ -73,13 +74,16 @@ final class UpdateRepoAction
      *                                                                 message becomes "Remove <pkg>" or
      *                                                                 "Remove N packages" with a body
      *                                                                 listing the removed names.
-     * @param  list<string>|null  $sweepPatterns  Optional fnmatch patterns (e.g. `webhubworks/*`).
+     * @param  list<string>|null  $sweepPatterns  Optional composer wildcard patterns (e.g. `webhubworks/*`).
      *                                            Only honoured for craft-mode runs. After craft
-     *                                            update, `composer outdated --format=json` is parsed
-     *                                            and any installed package whose name matches a
-     *                                            pattern gets `composer update <pkg> -W`. If any
-     *                                            package was bumped, migrate/all + project-config/apply
-     *                                            re-run so DB and config catch up.
+     *                                            update, `composer update -W <patterns>` bumps every
+     *                                            locked package that matches. If the lock changed,
+     *                                            migrate/all + project-config/apply re-run so DB and
+     *                                            config catch up.
+     * @param  list<string>  $securityPackages  Composer packages Panoptikum flags as vulnerable for
+     *                                          this repo. Craft-mode only, swept after the patterns
+     *                                          without -W. A failure is rolled back and reported as
+     *                                          a note instead of failing the repo.
      * @param  bool  $resetIfDirty  When true, a repo with uncommitted changes is hard-reset
      *                              (`git reset --hard HEAD` + `git clean -fd`) instead of being
      *                              skipped, then updated from the clean tree. Intended for the
@@ -104,10 +108,11 @@ final class UpdateRepoAction
         bool $push = false,
         bool $resetIfDirty = false,
         bool $resetIfDiverged = false,
+        array $securityPackages = [],
     ): RepoUpdateResult {
         $transcriptPath = self::openTranscript($repoPath);
         try {
-            $result = self::doUpdate($repoPath, $package, $onProgress, $withAllDependencies, $updatePackage, $keepDdevRunning, $craftCommandLine, $crawlerCommandLine, $commit, $removeSpec, $sweepPatterns, $push, $resetIfDirty, $resetIfDiverged);
+            $result = self::doUpdate($repoPath, $package, $onProgress, $withAllDependencies, $updatePackage, $keepDdevRunning, $craftCommandLine, $crawlerCommandLine, $commit, $removeSpec, $sweepPatterns, $push, $resetIfDirty, $resetIfDiverged, $securityPackages);
         } finally {
             self::closeTranscript();
         }
@@ -138,6 +143,7 @@ final class UpdateRepoAction
         bool $push = false,
         bool $resetIfDirty = false,
         bool $resetIfDiverged = false,
+        array $securityPackages = [],
     ): RepoUpdateResult {
         $updatePackage = $updatePackage ?? $package;
 
@@ -205,16 +211,16 @@ final class UpdateRepoAction
         $packageUpdates = $packageStep;
 
         // Composer sweep: after `craft update` finishes, pick up updates Craft
-        // doesn't know about (private/Repman plugins, transitive libs of Craft
-        // plugins) and bump them via `composer update -W` + post-migrate.
-        if ($craftCommandLine !== null && ! empty($sweepPatterns)) {
-            $sweepStep = self::runComposerSweep($repoPath, $branch, $sweepPatterns, $onProgress);
+        // doesn't know about (private/Repman plugins, libraries Panoptikum flags
+        // as vulnerable) and bump them via `composer update` + post-migrate.
+        $sweepNotes = [];
+        if ($craftCommandLine !== null && (! empty($sweepPatterns) || $securityPackages !== [])) {
+            $sweepStep = self::runComposerSweep($repoPath, $branch, $sweepPatterns ?? [], $securityPackages, $onProgress);
             if ($sweepStep instanceof RepoUpdateResult) {
                 return $sweepStep;
             }
-            foreach ($sweepStep as $u) {
-                $packageUpdates[] = $u;
-            }
+            array_push($packageUpdates, ...$sweepStep['updates']);
+            $sweepNotes = $sweepStep['notes'];
         }
 
         // Both verification steps below — `composer prep` and the site-crawler —
@@ -356,6 +362,7 @@ final class UpdateRepoAction
             prepSkippedUnchanged: $prepSkippedUnchanged,
             crawlerSkippedUnchanged: $crawlerSkippedUnchanged,
             divergedReset: $divergedReset,
+            notes: $sweepNotes,
         );
     }
 
@@ -884,78 +891,62 @@ final class UpdateRepoAction
     }
 
     /**
-     * Run `composer outdated --format=json`, filter the result by the given
-     * fnmatch patterns (e.g. `webhubworks/*`), then `composer update -W` the
-     * matches in one call. When the update actually changed the lock, re-run
-     * `migrate/all` + `project-config/apply` so DB/config catch up with code.
+     * `composer update -W <patterns>` for the allowlisted patterns, then
+     * `composer update <packages>` for the packages Panoptikum flags. Composer
+     * expands the `*` wildcards against the lock itself and only warns about a
+     * name nothing matches. When the lock changed, re-run `migrate/all` +
+     * `project-config/apply` so DB and config catch up with the code.
      *
-     * `composer outdated` advertises the absolute latest version even when a
-     * constraint pins the package below it, so the update can be a no-op. We
-     * compare composer.lock before/after and report only the packages that
-     * actually moved (with their real installed version) — never the phantom
-     * "latest" that never installed.
+     * shortcut: composer only understands `*` wildcards, so an fnmatch-only
+     * pattern such as `vendor/[ab]*` matches nothing. Expand it here if one
+     * is ever needed.
      *
-     * Returns the list of `{name, from, to, origin}` updates (origin=sweep) that
-     * actually landed, an empty list when nothing matched or nothing moved, or a
-     * failure RepoUpdateResult to short-circuit doUpdate.
+     * Returns the updates that landed in the lock (origin `sweep` or
+     * `panoptikum`) with notes for a human, or a failure RepoUpdateResult to
+     * short-circuit doUpdate.
      *
      * @param  list<string>  $patterns
+     * @param  list<string>  $securityPackages
      * @param  callable(string, ?string, ?string): void|null  $onProgress
-     * @return list<array{name: string, from: string, to: string, origin: string}>|RepoUpdateResult
+     * @return array{updates: list<array{name: string, from: string, to: string, origin: string}>, notes: list<string>}|RepoUpdateResult
      */
     private static function runComposerSweep(
         string $repoPath,
         string $branch,
         array $patterns,
+        array $securityPackages,
         ?callable $onProgress,
     ): array|RepoUpdateResult {
-        $outdated = self::run(
-            ['ddev', 'composer', 'outdated', '--format=json', '--no-interaction'],
-            $repoPath,
-            600,
-            $onProgress,
-            'ddev composer outdated (sweep)',
-        );
-        if (! $outdated->isSuccessful()) {
-            return self::fail($repoPath, $branch, 'ddev composer outdated', $outdated);
-        }
-
-        $candidates = self::filterOutdatedByPatterns($outdated->getOutput(), $patterns);
-        if (empty($candidates)) {
-            return [];
-        }
-
-        $names = array_map(fn (array $m) => $m['name'], $candidates);
         $lockBefore = @file_get_contents($repoPath.'/composer.lock');
+        $updates = [];
+        $notes = [];
 
-        $updateCmd = ['ddev', 'composer', 'update', '--no-audit', '--no-interaction', '-W', ...$names];
-        $update = self::run(
-            $updateCmd,
-            $repoPath,
-            1800,
-            $onProgress,
-            'ddev composer update -W (sweep) '.implode(' ', $names),
-        );
-        if (! $update->isSuccessful()) {
-            return self::fail($repoPath, $branch, 'ddev composer update (sweep)', $update);
+        if ($patterns !== []) {
+            $update = self::run(
+                ['ddev', 'composer', 'update', '--no-audit', '--no-interaction', '-W', ...$patterns],
+                $repoPath,
+                1800,
+                $onProgress,
+                'ddev composer update -W (sweep) '.implode(' ', $patterns),
+            );
+            if (! $update->isSuccessful()) {
+                return self::fail($repoPath, $branch, 'ddev composer update (sweep)', $update);
+            }
+            $updates = self::lockUpdates($update, 'sweep');
         }
 
-        // `composer outdated` advertises the absolute latest version even when a
-        // composer.json constraint pins the package below it (e.g. a new major).
-        // In that case `composer update` moves nothing and the lock is untouched
-        // — so there is nothing to migrate, apply, or commit. Bail before we
-        // report a phantom "update" that never installed.
-        $lockAfter = @file_get_contents($repoPath.'/composer.lock');
-        if ($lockBefore === $lockAfter) {
-            return [];
+        if ($securityPackages !== []) {
+            $security = self::runSecurityUpdate($repoPath, $branch, $securityPackages, $onProgress);
+            if ($security instanceof RepoUpdateResult) {
+                return $security;
+            }
+            array_push($updates, ...$security['updates']);
+            $notes = $security['notes'];
         }
 
-        // Report what actually landed in the lock, not what `outdated` claimed.
-        $installedAfter = [];
-        foreach ($names as $name) {
-            $installedAfter[$name] = self::lockedVersion($repoPath, $name);
+        if (@file_get_contents($repoPath.'/composer.lock') === $lockBefore) {
+            return ['updates' => [], 'notes' => $notes];
         }
-        $changes = self::resolveSweepChanges($candidates, $installedAfter);
 
         $postSteps = [
             [['ddev', 'php', 'craft', 'migrate/all'], 'ddev php craft migrate/all (post-sweep)'],
@@ -968,85 +959,72 @@ final class UpdateRepoAction
             }
         }
 
-        return $changes;
+        return ['updates' => $updates, 'notes' => $notes];
     }
 
     /**
-     * Reduce the sweep candidates (from `composer outdated`) to the packages
-     * that actually moved, using their real installed version after the update
-     * rather than the latest version `outdated` advertised. A candidate whose
-     * constraint blocked the advertised version — so its installed version is
-     * unchanged — is dropped, which keeps phantom "updates" out of the commit
-     * body and the run summary.
+     * `composer update` for the packages Panoptikum flags, without -W so
+     * Craft's own dependencies stay put. A failure must not cost the repo its
+     * Craft update: composer.json and composer.lock go back to their state
+     * before this step, `composer install` re-syncs vendor, and the failure
+     * becomes a note. Only a failed restore fails the repo.
      *
-     * @param  list<array{name: string, from: string, to: string, origin: string}>  $candidates
-     * @param  array<string, ?string>  $installedAfter  package name => version in the lock after the update
-     * @return list<array{name: string, from: string, to: string, origin: string}>
+     * @param  list<string>  $packages
+     * @param  callable(string, ?string, ?string): void|null  $onProgress
+     * @return array{updates: list<array{name: string, from: string, to: string, origin: string}>, notes: list<string>}|RepoUpdateResult
      */
-    public static function resolveSweepChanges(array $candidates, array $installedAfter): array
+    private static function runSecurityUpdate(string $repoPath, string $branch, array $packages, ?callable $onProgress): array|RepoUpdateResult
     {
-        $changes = [];
-        foreach ($candidates as $candidate) {
-            $to = $installedAfter[$candidate['name']] ?? null;
-            if ($to !== null && $to !== $candidate['from']) {
-                $changes[] = [
-                    'name' => $candidate['name'],
-                    'from' => $candidate['from'],
-                    'to' => $to,
-                    'origin' => 'sweep',
-                ];
-            }
+        $saved = [];
+        foreach (['composer.json', 'composer.lock'] as $file) {
+            $saved[$file] = @file_get_contents($repoPath.'/'.$file);
         }
 
-        return $changes;
+        try {
+            $update = self::run(
+                ['ddev', 'composer', 'update', '--no-audit', '--no-interaction', ...$packages],
+                $repoPath,
+                1800,
+                $onProgress,
+                'ddev composer update (Panoptikum) '.implode(' ', $packages),
+            );
+        } catch (ProcessTimedOutException $e) {
+            // A hung update gets the same rollback as a failed one.
+            $update = $e->getProcess();
+        }
+        if ($update->isSuccessful()) {
+            return ['updates' => self::lockUpdates($update, 'panoptikum'), 'notes' => []];
+        }
+
+        $logPath = self::writeLog($repoPath, 'composer-update-panoptikum', $update);
+        foreach ($saved as $file => $contents) {
+            if ($contents !== false) {
+                file_put_contents($repoPath.'/'.$file, $contents);
+            }
+        }
+        $install = self::run(['ddev', 'composer', 'install', '--no-interaction'], $repoPath, 1800, $onProgress, 'ddev composer install (rollback of the Panoptikum update)');
+        if (! $install->isSuccessful()) {
+            return self::fail($repoPath, $branch, 'ddev composer install (rollback of the Panoptikum update)', $install);
+        }
+
+        return ['updates' => [], 'notes' => [sprintf(
+            'Panoptikum security update rolled back (%s): %s%s',
+            implode(' ', $packages),
+            mb_strimwidth(self::extractError($update), 0, 200, '...'),
+            $logPath !== null ? " (log: {$logPath})" : '',
+        )]];
     }
 
     /**
-     * Parse `composer outdated --format=json` output and return the entries
-     * whose name matches any of the given fnmatch patterns. Composer's
-     * `outdated` output already excludes up-to-date packages, so the caller
-     * doesn't need to version-compare.
+     * The updates a `composer update` run wrote to the lock, tagged with where they came from.
      *
-     * @param  list<string>  $patterns
      * @return list<array{name: string, from: string, to: string, origin: string}>
      */
-    public static function filterOutdatedByPatterns(string $jsonOutput, array $patterns): array
+    private static function lockUpdates(Process $update, string $origin): array
     {
-        $data = json_decode($jsonOutput, true);
-        if (! is_array($data)) {
-            return [];
-        }
-        $installed = $data['installed'] ?? [];
-        if (! is_array($installed)) {
-            return [];
-        }
+        $updates = self::parseComposerUpdates($update->getOutput()."\n".$update->getErrorOutput());
 
-        $matches = [];
-        foreach ($installed as $pkg) {
-            if (! is_array($pkg)) {
-                continue;
-            }
-            $name = (string) ($pkg['name'] ?? '');
-            $version = (string) ($pkg['version'] ?? '');
-            $latest = (string) ($pkg['latest'] ?? '');
-            if ($name === '' || $version === '' || $latest === '') {
-                continue;
-            }
-
-            foreach ($patterns as $pattern) {
-                if (fnmatch($pattern, $name)) {
-                    $matches[] = [
-                        'name' => $name,
-                        'from' => $version,
-                        'to' => $latest,
-                        'origin' => 'sweep',
-                    ];
-                    break;
-                }
-            }
-        }
-
-        return $matches;
+        return array_map(fn (array $u) => $u + ['origin' => $origin], $updates);
     }
 
     /**
@@ -1086,7 +1064,7 @@ final class UpdateRepoAction
                     $u['name'],
                     $u['from'],
                     $u['to'],
-                    ($u['origin'] ?? 'craft') === 'sweep' ? '  (via composer sweep)' : '',
+                    self::originSuffix($u),
                 ),
                 $updates,
             ));
@@ -1100,6 +1078,20 @@ final class UpdateRepoAction
         );
 
         return $commit->isSuccessful();
+    }
+
+    /**
+     * How the commit body and the run summary mark where an update came from.
+     *
+     * @param  array{origin?: string}  $update
+     */
+    public static function originSuffix(array $update): string
+    {
+        return match ($update['origin'] ?? 'craft') {
+            'sweep' => '  (via composer sweep)',
+            'panoptikum' => '  (Panoptikum security fix)',
+            default => '',
+        };
     }
 
     /**

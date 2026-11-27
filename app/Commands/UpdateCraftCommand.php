@@ -7,6 +7,7 @@ use PackageUpdater\Actions\FindCraftReposAction;
 use PackageUpdater\Actions\LastRunStore;
 use PackageUpdater\Actions\UpdateRepoAction;
 use PackageUpdater\DataTransferObjects\RepoUpdateResult;
+use PackageUpdater\Support\PanoptikumClient;
 use PackageUpdater\Support\RepoName;
 use PackageUpdater\Support\SlackNotifier;
 use PackageUpdater\Support\UserConfig;
@@ -40,8 +41,8 @@ class UpdateCraftCommand extends UpdateAllCommand
         {--crawler-command= : Full shell command to run as the crawler (skips the editable-command prompt). Defaults to `site-crawler crawl:ddev --exclude="assets,variant,index.php,downloads,actions,.pdf"`.}
         {--open : After the run, open every repo with uncommitted changes in GitKraken (skips the prompt)}
         {--no-open : Skip the end-of-run "open in GitKraken" prompt entirely}
-        {--composer-sweep=* : fnmatch patterns (e.g. webhubworks/*). After craft update, `composer outdated` is parsed and any installed package matching a pattern is bumped via `composer update -W` + migrate/all + project-config/apply. Repeatable; overrides the stored default.}
-        {--no-composer-sweep : Disable the composer sweep step for this run (overrides the stored default).}
+        {--composer-sweep=* : Composer wildcard patterns (e.g. webhubworks/*). After craft update, every locked package matching a pattern is bumped via `composer update -W`, then the composer packages Panoptikum flags for the repo via `composer update`, then migrate/all + project-config/apply. Repeatable; overrides the stored default.}
+        {--no-composer-sweep : Disable the composer sweep step for this run, Panoptikum packages included (overrides the stored default).}
         {--maintenance : Semi-automated dedicated-server run. Implies --yes and defaults to: handle "all", --parallel=3, --stop-ddev, commit + push, crawl every repo, and a craft command with --backup=0. Posts a run summary to Slack when a webhook is configured (see `pu setup`). Explicit flags still override each default.}
         {--yes : Skip the confirmation prompt}
         {--retrying : Set by `retry`, not meant to be passed by hand. Keeps logs/last-run.json untouched so the original run stays the one that is replayed.}';
@@ -204,6 +205,9 @@ class UpdateCraftCommand extends UpdateAllCommand
             ]);
         }
 
+        // Fetched per run, never stored, so `retry` asks Panoptikum again.
+        [$securityByPath, $panoptikumWarning] = $this->resolveSecurityPackages(array_map(fn ($m) => $m['path'], $matches));
+
         if (! $this->option('no-ssh-auth')) {
             $this->ensureDdevSshAuth();
         }
@@ -232,9 +236,10 @@ class UpdateCraftCommand extends UpdateAllCommand
             push: $push,
             resetIfDirty: $resetIfDirty,
             resetIfDiverged: $resetIfDiverged,
+            securityPackages: $securityByPath[$repo] ?? [],
         );
 
-        $buildCmd = function (string $repo, string $php, string $binary) use ($packagesByPath, $craftCommandLine, $keepDdevRunning, $crawlSet, $crawlerCommandLine, $commit, $sweepPatterns, $push, $resetIfDirty, $resetIfDiverged): array {
+        $buildCmd = function (string $repo, string $php, string $binary) use ($packagesByPath, $craftCommandLine, $keepDdevRunning, $crawlSet, $crawlerCommandLine, $commit, $sweepPatterns, $securityByPath, $push, $resetIfDirty, $resetIfDiverged): array {
             $cmd = [$php, $binary, 'update:single', $repo, $packagesByPath[$repo], '--craft-command='.$craftCommandLine];
             if (! $keepDdevRunning) {
                 $cmd[] = '--stop-ddev';
@@ -257,6 +262,9 @@ class UpdateCraftCommand extends UpdateAllCommand
             foreach ($sweepPatterns as $pattern) {
                 $cmd[] = '--composer-sweep='.$pattern;
             }
+            foreach ($securityByPath[$repo] ?? [] as $package) {
+                $cmd[] = '--security-package='.$package;
+            }
 
             return $cmd;
         };
@@ -273,7 +281,7 @@ class UpdateCraftCommand extends UpdateAllCommand
         LastRunStore::saveResults('update:craft', array_map(fn ($r) => $r->toArray(), $allResults));
 
         if ($this->option('maintenance')) {
-            $this->sendMaintenanceSlackSummary($allResults, $handle, $reposDir);
+            $this->sendMaintenanceSlackSummary($allResults, $handle, $reposDir, $panoptikumWarning);
         }
 
         $this->offerOpenPrompt($allResults);
@@ -288,7 +296,7 @@ class UpdateCraftCommand extends UpdateAllCommand
      *
      * @param  list<RepoUpdateResult>  $results
      */
-    protected function sendMaintenanceSlackSummary(array $results, string $handle, string $reposDir): void
+    protected function sendMaintenanceSlackSummary(array $results, string $handle, string $reposDir, ?string $warning = null): void
     {
         $webhook = UserConfig::getSlackWebhookUrl();
         if ($webhook === null) {
@@ -297,7 +305,7 @@ class UpdateCraftCommand extends UpdateAllCommand
             return;
         }
 
-        $payload = BuildMaintenanceSlackMessage::build($results, $handle, $reposDir, date('Y-m-d H:i'));
+        $payload = BuildMaintenanceSlackMessage::build($results, $handle, $reposDir, date('Y-m-d H:i'), $warning);
 
         try {
             SlackNotifier::send($webhook, $payload);
@@ -305,6 +313,44 @@ class UpdateCraftCommand extends UpdateAllCommand
         } catch (\Throwable $e) {
             warning('Could not post the Slack summary: '.$e->getMessage());
         }
+    }
+
+    /**
+     * The composer packages Panoptikum flags for each repo, swept after
+     * `craft update`. Optional: without Panoptikum set up the run sweeps only
+     * the patterns. When Panoptikum doesn't answer, the run goes on the same
+     * way and the warning lands in the Slack summary.
+     *
+     * @param  list<string>  $paths
+     * @return array{0: array<string, list<string>>, 1: ?string}
+     */
+    protected function resolveSecurityPackages(array $paths): array
+    {
+        $url = UserConfig::getPanoptikumUrl();
+        $token = UserConfig::getPanoptikumToken();
+        if ($url === null || $token === null || $this->option('no-composer-sweep')) {
+            return [[], null];
+        }
+
+        try {
+            $repositories = PanoptikumClient::composerUpdates($url, $token);
+        } catch (\Throwable $e) {
+            $warning = 'Panoptikum unreachable, swept without its security packages: '.$e->getMessage();
+            warning($warning);
+
+            return [[], $warning];
+        }
+
+        $byPath = [];
+        foreach ($paths as $path) {
+            $packages = UpdateCommand::panoptikumPackagesFor(RepoName::panoptikumKey($path), $repositories);
+            if ($packages !== []) {
+                $byPath[$path] = $packages;
+            }
+        }
+        info(sprintf('Panoptikum flags composer packages in %d of %d repo(s).', count($byPath), count($paths)));
+
+        return [$byPath, null];
     }
 
     /**

@@ -233,3 +233,11 @@ test('a diverged reset with nothing to update does not vanish into the up to dat
     expect($text)->toContain('*epsilon* - up to date (diverged, reset to origin: discarded 2 local commits)');
     expect($text)->not->toContain('already up to date');
 });
+
+test('a run-wide warning shows up above the repo sections', function () {
+    $results = [RepoUpdateResult::success(path: '/reps/alpha', branch: 'main', hasUncommittedChanges: false)];
+
+    $text = blockTexts(BuildMaintenanceSlackMessage::build($results, 'all', '/reps', '2026-07-17 09:00', 'Panoptikum unreachable, swept without its security packages: HTTP 403'));
+
+    expect($text)->toContain('⚠️ Panoptikum unreachable, swept without its security packages: HTTP 403');
+});

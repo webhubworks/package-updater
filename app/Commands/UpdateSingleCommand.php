@@ -17,6 +17,7 @@ class UpdateSingleCommand extends Command
         {--craft-command=}
         {--crawler-command=}
         {--composer-sweep=*}
+        {--security-package=*}
         {--commit}
         {--push}
         {--reset-if-dirty}
@@ -50,6 +51,7 @@ class UpdateSingleCommand extends Command
             push: (bool) $this->option('push'),
             resetIfDirty: (bool) $this->option('reset-if-dirty'),
             resetIfDiverged: (bool) $this->option('reset-if-diverged'),
+            securityPackages: array_values(array_map('strval', (array) $this->option('security-package'))),
         );
 
         $this->output->writeln(json_encode($result->toArray()));

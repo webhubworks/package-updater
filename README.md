@@ -71,7 +71,8 @@ is set up, `pu update` then asks Panoptikum's `GET
 repo, runs `ddev composer update <packages>`, `migrate/all`, and
 `project-config/apply`, and commits the result separately as
 `Security updates`. Without Panoptikum, or when it doesn't answer, the
-step is skipped. `update:craft` and maintenance runs don't do this step.
+step is skipped. `update:craft` and maintenance runs sweep the same
+packages into their `Package updates` commit instead.
 
 `--key=<panoptikum key>` runs the update in the repo under the repos
 directory whose Panoptikum key (composer name, else origin owner/repo)
@@ -145,6 +146,20 @@ Craft-aware variant. Same flow, but:
   in `COMPOSER_AUTH`: Craft's updater sets its own `COMPOSER_HOME` and
   would otherwise get 401 from private registries such as
   `packages.webhub.de`.
+- After the Craft update, runs the composer sweep:
+  `ddev composer update -W <patterns>` for the saved sweep patterns
+  (such as `webhubworks/*`, set with `pu setup --composer-sweep=` or per
+  run with `--composer-sweep=`). When [Panoptikum](#panoptikum-npm-updates)
+  is set up, it then runs `ddev composer update <packages>`, without
+  `-W`, for the composer packages Panoptikum flags as vulnerable in that
+  repo. The run fetches that list once at the start. If Panoptikum
+  doesn't answer, the run sweeps only the patterns and the Slack summary
+  says so. If the Panoptikum update fails in a repo, the run restores
+  `composer.json` and `composer.lock`, runs `ddev composer install`, and
+  reports the failure as a note, so the repo keeps its Craft update. When
+  the lock changed, `migrate/all` and `project-config/apply` run again.
+  Everything lands in the same `Package updates` commit, each line marked
+  with where it came from. `--no-composer-sweep` turns off both parts.
 - After `composer prep`, optionally runs `site-crawler crawl:ddev` in a
   second multiselect-chosen subset of repos. Parses the crawler's
   "Failed requests" table and warns on any 5xx URLs even if the crawler
