@@ -74,6 +74,11 @@ repo, runs `ddev composer update <packages>`, `migrate/all`, and
 step is skipped. `update:craft` and maintenance runs sweep the same
 packages into their `Package updates` commit instead.
 
+When a Craft run changed something, `pu update` then asks whether to run
+the site-crawler with the same command as `update:craft`, and lists any
+URL that returned a 5xx. `--crawl` runs it without asking, `--no-crawl`
+skips it, and `--yes` runs it.
+
 `--key=<panoptikum key>` runs the update in the repo under the repos
 directory whose Panoptikum key (composer name, else origin owner/repo)
 matches, so it works from any directory. Panoptikum's cell page shows

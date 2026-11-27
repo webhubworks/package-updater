@@ -21,6 +21,8 @@ use function Laravel\Prompts\warning;
 
 class UpdateCraftCommand extends UpdateAllCommand
 {
+    public const DefaultCrawlerCommand = 'site-crawler crawl:ddev --concurrency=8 --exclude="uploads,assets,variant,index.php,downloads,actions,.pdf,.png,.jpg,.webp"';
+
     protected $signature = 'update:craft
         {handle? : Craft plugin handle, "craft" to update Craft itself, or "all" to update every Craft package}
         {--reps-dir= : Directory containing repos (default: ~/reps)}
@@ -500,7 +502,7 @@ class UpdateCraftCommand extends UpdateAllCommand
      */
     protected function resolveCrawlerCommand(): string
     {
-        $default = 'site-crawler crawl:ddev --concurrency=8 --exclude="uploads,assets,variant,index.php,downloads,actions,.pdf,.png,.jpg,.webp"';
+        $default = self::DefaultCrawlerCommand;
 
         $cli = $this->option('crawler-command');
         if (is_string($cli) && $cli !== '') {

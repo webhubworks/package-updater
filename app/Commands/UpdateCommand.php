@@ -33,6 +33,8 @@ class UpdateCommand extends Command
         {--commit : Always commit the resulting changes (skip prompt)}
         {--no-commit : Never commit (skip prompt)}
         {--show-output : Stream composer output live instead of running it under a spinner}
+        {--crawl : In a Craft repo, run the site-crawler after the update (skips the prompt)}
+        {--no-crawl : Never run the site-crawler (skips the prompt)}
         {--yes : Skip the run confirmation (defaults to committing if neither --commit nor --no-commit is set)}';
 
     protected $description = 'Update the current repo (Craft repos: `ddev php craft update all`, then the composer packages Panoptikum lists as vulnerable; otherwise: `composer update`), parse the package changes, and commit them';
@@ -72,6 +74,7 @@ class UpdateCommand extends Command
             }
         }
 
+        $headBefore = trim($this->exec(['git', 'rev-parse', 'HEAD'], $cwd, stream: false)->getOutput());
         $useDdev = ! $this->option('no-ddev') && is_file($cwd.'/.ddev/config.yaml');
         $packages = array_values(array_filter(
             array_map('strval', (array) $this->argument('package')),
@@ -166,7 +169,68 @@ class UpdateCommand extends Command
             $this->runPrep($cwd, $useDdev);
         }
 
+        if ($isCraft && $this->repoChanged($cwd, $headBefore, trim($status->getOutput())) && $this->shouldCrawl()) {
+            $this->runCrawler($cwd);
+        }
+
         return $exitCode;
+    }
+
+    /**
+     * True when the run committed something or changed the working tree, so
+     * there is something new to crawl. Compares against the tree's state at
+     * the start, so a repo that was already dirty doesn't count by itself.
+     */
+    private function repoChanged(string $cwd, string $headBefore, string $statusBefore): bool
+    {
+        $head = trim($this->exec(['git', 'rev-parse', 'HEAD'], $cwd, stream: false)->getOutput());
+        $status = trim($this->exec(['git', 'status', '--porcelain'], $cwd, stream: false)->getOutput());
+
+        return $head !== $headBefore || $status !== $statusBefore;
+    }
+
+    private function shouldCrawl(): bool
+    {
+        if ($this->option('no-crawl')) {
+            return false;
+        }
+        if ($this->option('crawl') || $this->option('yes')) {
+            return true;
+        }
+
+        $this->newLine();
+
+        return confirm(label: 'Run the site-crawler to check the updated site?', default: true);
+    }
+
+    /**
+     * Crawls the site with the same command `update:craft` uses. Like prep,
+     * a failure doesn't change the exit code: the update itself succeeded.
+     */
+    private function runCrawler(string $cwd): void
+    {
+        $cmd = UpdateCraftCommand::DefaultCrawlerCommand;
+        $this->newLine();
+        $crawler = $this->runComposer($cmd, $cwd, $cmd);
+        $serverErrors = UpdateRepoAction::parseCrawlerServerErrors($crawler->getOutput()."\n".$crawler->getErrorOutput());
+
+        $this->newLine();
+        if ($crawler->isSuccessful() && $serverErrors === []) {
+            $this->line('  <fg=green>✓ Site-crawler: no server errors</>');
+
+            return;
+        }
+
+        if (! $crawler->isSuccessful()) {
+            $this->line("  <fg=red;options=bold>✗ Site-crawler failed (exit {$crawler->getExitCode()})</>");
+        }
+        if ($serverErrors !== []) {
+            $this->line(sprintf('  <fg=red;options=bold>✗ Site-crawler: %d URL(s) returned 5xx</>', count($serverErrors)));
+            foreach ($serverErrors as $url) {
+                $this->line("    <fg=red>•</> {$url}");
+            }
+        }
+        $this->printLogPath($this->writeLog($cwd, $cmd, $crawler, 'pu-crawler'));
     }
 
     /**
